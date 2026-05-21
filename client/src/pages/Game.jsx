@@ -21,6 +21,11 @@ export default function Game({ config, onLeave }) {
   const [drawOffer, setDrawOffer]           = useState(null);
   const [rematchRequest, setRematchRequest] = useState(null);
 
+  // Move highlights
+  const [selectedSquare, setSelectedSquare]   = useState(null);
+  const [optionSquares, setOptionSquares]     = useState({});
+  const [lastMoveSquares, setLastMoveSquares] = useState({});
+
   const socketRef      = useRef(null);
   const moveListRef    = useRef(null);
   const playerColorRef = useRef(null);
@@ -75,44 +80,50 @@ export default function Game({ config, onLeave }) {
       setStatus(`${whitePlayer} (White) vs ${blackPlayer} (Black)`);
     });
 
-    // Server ACKs our move — update board to authoritative state
+    // Server ACKs our move
     socket.on("move_ack", ({ move, fen }) => {
       const g = new Chess(fen);
       gameRef.current = g;
       setGame(g);
       setMoveHistory((h) => [...h, move]);
+      setSelectedSquare(null);
+      setOptionSquares({});
       if (g.isCheck()) setStatus("Check!");
     });
 
-    // Opponent's move arrives with server-authoritative FEN
+    // Opponent's move
     socket.on("opponent_move", ({ move, fen }) => {
       const g = new Chess(fen);
       gameRef.current = g;
       setGame(g);
       setMoveHistory((h) => [...h, move]);
+      setSelectedSquare(null);
+      setOptionSquares({});
+      // Highlight the last move squares
+      const hist = g.history({ verbose: true });
+      if (hist.length > 0) {
+        const last = hist[hist.length - 1];
+        setLastMoveSquares({
+          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
+          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
+        });
+      }
       if (g.isCheck()) setStatus("Check!");
     });
 
-    // Server rejected move — revert to authoritative FEN
     socket.on("illegal_move", ({ fen }) => {
       const g = new Chess(fen);
       gameRef.current = g;
       setGame(g);
+      setSelectedSquare(null);
+      setOptionSquares({});
       setStatus("Illegal move.");
     });
 
-    socket.on("game_over", ({ result }) => {
-      setGameResult(result);
-      setStatus("Game over");
+    socket.on("game_over",           ({ result })  => { setGameResult(result); setStatus("Game over"); });
+    socket.on("opponent_disconnected", ({ reconnecting: r }) => {
+      setStatus(r ? "Opponent disconnected — waiting 30s…" : "Opponent disconnected.");
     });
-
-    socket.on("opponent_disconnected", ({ reconnecting: oppReconnecting }) => {
-      setStatus(oppReconnecting
-        ? "Opponent disconnected — waiting 30s for reconnect…"
-        : "Opponent disconnected."
-      );
-    });
-
     socket.on("opponent_left",       ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
     socket.on("error",               ({ message }) => setStatus(`Error: ${message}`));
     socket.on("clock_update",        ({ times })   => setTimes(times));
@@ -134,6 +145,9 @@ export default function Game({ config, onLeave }) {
       setDrawOffer(null);
       setTimes({ w: null, b: null });
       setPlayerColor(myColor);
+      setSelectedSquare(null);
+      setOptionSquares({});
+      setLastMoveSquares({});
       setStatus(`Playing against ${opponentRef.current}`);
     });
 
@@ -141,8 +155,67 @@ export default function Game({ config, onLeave }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // No optimistic updates — just validate locally and send to server.
-  // Server responds with move_ack (accepted) or illegal_move (rejected).
+  // Show legal move dots when a piece is clicked
+  const getMoveOptions = useCallback((square, g, color) => {
+    if (g.turn() !== color) return;
+    const moves = g.moves({ square, verbose: true });
+    if (!moves.length) { setOptionSquares({}); return; }
+    const squares = {};
+    moves.forEach(({ to, flags }) => {
+      squares[to] = {
+        background: g.get(to)
+          ? "radial-gradient(circle, rgba(255,0,0,0.4) 60%, transparent 65%)"
+          : "radial-gradient(circle, rgba(0,0,0,0.25) 30%, transparent 33%)",
+        borderRadius: "50%",
+      };
+    });
+    squares[square] = { background: "rgba(255, 255, 0, 0.4)" };
+    setOptionSquares(squares);
+    setSelectedSquare(square);
+  }, []);
+
+  const onSquareClick = useCallback((square) => {
+    const color  = playerColorRef.current;
+    const room   = roomIdRef.current;
+    const g      = gameRef.current;
+    const result = resultRef.current;
+
+    if (!color || result) return;
+
+    // If clicking a second square and we have a selected piece — try the move
+    if (selectedSquare && selectedSquare !== square) {
+      const copy = new Chess(g.fen());
+      const piece = copy.get(selectedSquare);
+
+      const promotion =
+        piece?.type === "p" &&
+        ((color === "w" && square[1] === "8") || (color === "b" && square[1] === "1"))
+          ? "q" : undefined;
+
+      const move = copy.move({ from: selectedSquare, to: square, promotion });
+
+      if (move) {
+        // Valid move — send to server and optimistically update
+        gameRef.current = copy;
+        setGame(copy);
+        setSelectedSquare(null);
+        setOptionSquares({});
+        setLastMoveSquares({
+          [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+          [square]:         { background: "rgba(255, 255, 0, 0.4)"  },
+        });
+        socketRef.current?.emit("move", {
+          roomId: room,
+          move: { from: selectedSquare, to: square, promotion },
+        });
+        return;
+      }
+    }
+
+    // Otherwise select the clicked piece
+    getMoveOptions(square, g, color);
+  }, [selectedSquare, getMoveOptions]);
+
   const onDrop = useCallback((sourceSquare, targetSquare, piece) => {
     const color  = playerColorRef.current;
     const room   = roomIdRef.current;
@@ -157,20 +230,23 @@ export default function Game({ config, onLeave }) {
       (piece === "bP" && targetSquare[1] === "1")
         ? "q" : undefined;
 
-    // Local validation so illegal drags snap back immediately
     const copy = new Chess(g.fen());
-    const localMove = copy.move({ from: sourceSquare, to: targetSquare, promotion });
-    if (!localMove) return false;
+    const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
+    if (!move) return false;
 
-    // Send to server — board updates only when move_ack comes back
+    gameRef.current = copy;
+    setGame(copy);
+    setSelectedSquare(null);
+    setOptionSquares({});
+    setLastMoveSquares({
+      [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+      [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
+    });
+
     socketRef.current?.emit("move", {
       roomId: room,
       move: { from: sourceSquare, to: targetSquare, promotion },
     });
-
-    // Optimistically show the move so it feels responsive
-    gameRef.current = copy;
-    setGame(copy);
 
     return true;
   }, []);
@@ -212,6 +288,8 @@ export default function Game({ config, onLeave }) {
   for (let i = 0; i < moveHistory.length; i += 2) {
     movePairs.push({ num: Math.floor(i / 2) + 1, w: moveHistory[i], b: moveHistory[i + 1] });
   }
+
+  const customSquareStyles = { ...lastMoveSquares, ...optionSquares };
 
   return (
     <div className="game-page">
@@ -303,7 +381,9 @@ export default function Game({ config, onLeave }) {
         <Chessboard
           position={game.fen()}
           onPieceDrop={onDrop}
+          onSquareClick={onSquareClick}
           boardOrientation={boardOrientation}
+          customSquareStyles={customSquareStyles}
           customBoardStyle={{ borderRadius: "8px", boxShadow: "0 16px 60px rgba(0,0,0,0.6)" }}
           customDarkSquareStyle={{ backgroundColor: "#8B6914" }}
           customLightSquareStyle={{ backgroundColor: "#F0D9A0" }}
