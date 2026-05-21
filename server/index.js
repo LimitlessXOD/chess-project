@@ -191,13 +191,15 @@ io.on("connection", (socket) => {
     socket.emit("room_joined",   { roomId: id, color: "b", opponentName: white.name });
     io.to(white.id).emit("opponent_joined", { opponentName: name });
 
-    // FIX: emit game_start so the client listener actually fires
+    // Emit game_start to both players so clients can mark the game as active
     io.to(id).emit("game_start", {
       whitePlayer: white.name,
       blackPlayer: name,
     });
 
-    startClock(id);
+    // Small delay so clients finish processing room_joined/opponent_joined
+    // before the first clock_update arrives
+    setTimeout(() => startClock(id), 500);
     console.log(`${name} joined room ${id}`);
   });
 
