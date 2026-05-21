@@ -225,7 +225,7 @@ export default function Game({ config, onLeave }) {
     const room  = roomIdRef.current;
     const g     = gameRef.current;
 
-    if (!color || resultRef.current || !gameStartedRef.current) return;
+    if (!color || resultRef.current) return;
     if (g.turn() !== color) { setSelectedSquare(null); setOptionSquares({}); return; }
 
     // Second click: try to move
@@ -268,7 +268,7 @@ export default function Game({ config, onLeave }) {
     const room  = roomIdRef.current;
     const g     = gameRef.current;
 
-    if (!color || resultRef.current || !gameStartedRef.current) return false;
+    if (!color || resultRef.current) return false;
     if (g.turn() !== color) return false;
 
     const promotion =
