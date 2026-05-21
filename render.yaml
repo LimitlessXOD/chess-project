@@ -1,0 +1,27 @@
+services:
+  # ── Node.js server ──────────────────────────────────────────────────────────
+  - type: web
+    name: chess-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: PORT
+        value: 3001
+    # Free tier spins down after 15 min of inactivity — see deployment guide
+    plan: free
+
+  # ── React client (static site) ─────────────────────────────────────────────
+  - type: web
+    name: chess-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_SOCKET_URL
+        # After deploying, replace this with your actual chess-server URL
+        # e.g. https://chess-server.onrender.com
+        value: PASTE_YOUR_SERVER_URL_HERE
+    plan: free
