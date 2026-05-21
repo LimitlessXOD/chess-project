@@ -9,47 +9,55 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
 export default function Game({ config, onLeave }) {
   const { mode, playerName, roomCode } = config;
 
-  const [game, setGame]                     = useState(() => new Chess());
-  const [playerColor, setPlayerColor]       = useState(null);
-  const [roomId, setRoomId]                 = useState(null);
-  const [opponentName, setOpponentName]     = useState(null);
-  const [status, setStatus]                 = useState("Connecting…");
-  const [moveHistory, setMoveHistory]       = useState([]);
-  const [gameResult, setGameResult]         = useState(null);
-  const [copied, setCopied]                 = useState(false);
-  const [times, setTimes]                   = useState({ w: null, b: null });
-  const [drawOffer, setDrawOffer]           = useState(null);
-  const [rematchRequest, setRematchRequest] = useState(null);
-  const [gameStarted, setGameStarted]       = useState(false);
+  // ─── Single source of truth: FEN string (not a Chess object in state) ───────
+  // This avoids stale Chess object bugs. We keep a Chess object only in a ref.
+  const [fen, setFen]                        = useState("start");
+  const [playerColor, setPlayerColor]        = useState(null);
+  const [roomId, setRoomId]                  = useState(null);
+  const [opponentName, setOpponentName]      = useState(null);
+  const [status, setStatus]                  = useState("Connecting…");
+  const [moveHistory, setMoveHistory]        = useState([]);
+  const [gameResult, setGameResult]          = useState(null);
+  const [copied, setCopied]                  = useState(false);
+  const [times, setTimes]                    = useState({ w: null, b: null });
+  const [drawOffer, setDrawOffer]            = useState(null);
+  const [rematchRequest, setRematchRequest]  = useState(null);
+  const [gameStarted, setGameStarted]        = useState(false);
+  const [selectedSquare, setSelectedSquare]  = useState(null);
+  const [optionSquares, setOptionSquares]    = useState({});
+  const [lastMoveSquares, setLastMoveSquares]= useState({});
 
-  const [selectedSquare, setSelectedSquare]   = useState(null);
-  const [optionSquares, setOptionSquares]     = useState({});
-  const [lastMoveSquares, setLastMoveSquares] = useState({});
+  // ─── Refs (always current, no stale closure issues) ──────────────────────────
+  const socketRef       = useRef(null);
+  const moveListRef     = useRef(null);
+  const playerColorRef  = useRef(null);
+  const opponentRef     = useRef(null);
+  const roomIdRef       = useRef(null);
+  const gameRef         = useRef(new Chess());   // authoritative game state
+  const resultRef       = useRef(null);
+  const gameStartedRef  = useRef(false);
 
-  const socketRef      = useRef(null);
-  const moveListRef    = useRef(null);
-  const playerColorRef = useRef(null);
-  const opponentRef    = useRef(null);
-  const roomIdRef      = useRef(null);
-  const gameRef        = useRef(new Chess());
-  const resultRef      = useRef(null);
-  const gameStartedRef = useRef(false);
-
-  const chessFromFen = (fen) => {
-    try { return new Chess(fen); }
-    catch { const g = new Chess(); g.load(fen); return g; }
+  // ─── Helpers ─────────────────────────────────────────────────────────────────
+  const loadFen = (f) => {
+    try { return new Chess(f); }
+    catch { const g = new Chess(); g.load(f); return g; }
   };
 
+  const applyServerFen = useCallback((f) => {
+    const g = loadFen(f);
+    gameRef.current = g;
+    setFen(g.fen());
+    return g;
+  }, []);
+
+  // ─── Socket setup ────────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = io(SOCKET_URL);
     socketRef.current = socket;
 
     socket.on("connect", () => {
-      if (mode === "create") {
-        socket.emit("create_room", { playerName });
-      } else {
-        socket.emit("join_room", { roomId: roomCode, playerName });
-      }
+      if (mode === "create") socket.emit("create_room", { playerName });
+      else                   socket.emit("join_room", { roomId: roomCode, playerName });
     });
 
     socket.on("room_created", ({ roomId: rid, color }) => {
@@ -86,15 +94,34 @@ export default function Game({ config, onLeave }) {
       setStatus(`${whitePlayer} (White) vs ${blackPlayer} (Black)`);
     });
 
-    // ✅ FIX: Only update state from server events — never from local move attempts
-    socket.on("move_ack", ({ move, fen }) => {
-      const g = chessFromFen(fen);
-      gameRef.current = g;
-      setGame(g);
+    // Server confirms our move — just update move history & status.
+    // Board position is already correct from optimistic update, so DON'T
+    // call setFen here (avoids flicker). Only sync if FEN mismatches.
+    socket.on("move_ack", ({ move, fen: serverFen }) => {
+      // Only correct if server disagrees (shouldn't happen for legal moves)
+      if (gameRef.current.fen() !== serverFen) {
+        applyServerFen(serverFen);
+      }
       setMoveHistory((h) => [...h, move]);
       setSelectedSquare(null);
       setOptionSquares({});
-      // Update last move highlights
+      const hist = gameRef.current.history({ verbose: true });
+      if (hist.length > 0) {
+        const last = hist[hist.length - 1];
+        setLastMoveSquares({
+          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
+          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
+        });
+      }
+      if (gameRef.current.isCheck()) setStatus("Check!");
+      else setStatus("");
+    });
+
+    socket.on("opponent_move", ({ move, fen: serverFen }) => {
+      const g = applyServerFen(serverFen);
+      setMoveHistory((h) => [...h, move]);
+      setSelectedSquare(null);
+      setOptionSquares({});
       const hist = g.history({ verbose: true });
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
@@ -107,53 +134,39 @@ export default function Game({ config, onLeave }) {
       else setStatus("");
     });
 
-    socket.on("opponent_move", ({ move, fen }) => {
-      const g = chessFromFen(fen);
-      gameRef.current = g;
-      setGame(g);
-      setMoveHistory((h) => [...h, move]);
-      setSelectedSquare(null);
-      setOptionSquares({});
-      const hist = g.history({ verbose: true });
-      if (hist.length > 0) {
-        const last = hist[hist.length - 1];
-        setLastMoveSquares({
-          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
-          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
-        });
-      }
-      if (g.isCheck()) setStatus("Check!");
-      else setStatus("");
-    });
-
-    socket.on("illegal_move", ({ fen }) => {
-      const g = chessFromFen(fen);
-      gameRef.current = g;
-      setGame(g);
+    // Server rejected move — roll back board to server's FEN
+    socket.on("illegal_move", ({ fen: serverFen }) => {
+      applyServerFen(serverFen);
       setSelectedSquare(null);
       setOptionSquares({});
     });
 
-    socket.on("game_over",             ({ result })  => { resultRef.current = result; setGameResult(result); setStatus("Game over"); });
+    socket.on("game_over", ({ result }) => {
+      resultRef.current = result;
+      setGameResult(result);
+      setStatus("Game over");
+    });
+
     socket.on("opponent_disconnected", ({ reconnecting: r }) => {
       setStatus(r ? "Opponent disconnected — waiting 30s…" : "Opponent disconnected.");
     });
-    socket.on("opponent_left",         ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
-    socket.on("error",                 ({ message }) => setStatus(`Error: ${message}`));
-    socket.on("clock_update",          ({ times: t }) => setTimes(t));
-    socket.on("draw_offered",          ({ from })    => setDrawOffer(from));
-    socket.on("draw_declined",         ()            => { setDrawOffer(null); setStatus("Draw declined."); });
-    socket.on("rematch_requested",     ({ from })    => setRematchRequest(from));
-    socket.on("rematch_declined",      ()            => { setRematchRequest(null); setStatus("Rematch declined."); });
 
-    socket.on("rematch_start", ({ colors, fen }) => {
-      const fresh = chessFromFen(fen);
+    socket.on("opponent_left",  ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
+    socket.on("error",          ({ message }) => setStatus(`Error: ${message}`));
+    socket.on("clock_update",   ({ times: t }) => setTimes(t));
+    socket.on("draw_offered",   ({ from })    => setDrawOffer(from));
+    socket.on("draw_declined",  ()            => { setDrawOffer(null); setStatus("Draw declined."); });
+    socket.on("rematch_requested", ({ from }) => setRematchRequest(from));
+    socket.on("rematch_declined",  ()         => { setRematchRequest(null); setStatus("Rematch declined."); });
+
+    socket.on("rematch_start", ({ colors, fen: f }) => {
       const myColor = colors[socket.id];
+      const fresh   = loadFen(f);
       gameRef.current        = fresh;
       resultRef.current      = null;
       playerColorRef.current = myColor;
       gameStartedRef.current = true;
-      setGame(fresh);
+      setFen(fresh.fen());
       setMoveHistory([]);
       setGameResult(null);
       setRematchRequest(null);
@@ -167,13 +180,11 @@ export default function Game({ config, onLeave }) {
       setStatus(`Playing against ${opponentRef.current}`);
     });
 
-    socket.on("reconnected", ({ color, fen, moves, times: t, opponentName: opp }) => {
-      const g = chessFromFen(fen);
-      gameRef.current        = g;
+    socket.on("reconnected", ({ color, fen: f, moves, times: t, opponentName: opp }) => {
+      const g = applyServerFen(f);
       playerColorRef.current = color;
       opponentRef.current    = opp;
       gameStartedRef.current = true;
-      setGame(g);
       setPlayerColor(color);
       setOpponentName(opp);
       setMoveHistory(moves || []);
@@ -186,7 +197,10 @@ export default function Game({ config, onLeave }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const getMoveOptions = useCallback((square, g, color) => {
+  // ─── Show legal move dots ─────────────────────────────────────────────────
+  const getMoveOptions = useCallback((square) => {
+    const g     = gameRef.current;
+    const color = playerColorRef.current;
     if (g.turn() !== color) return false;
     const moves = g.moves({ square, verbose: true });
     if (!moves.length) { setOptionSquares({}); return false; }
@@ -205,18 +219,16 @@ export default function Game({ config, onLeave }) {
     return true;
   }, []);
 
+  // ─── Click to move ────────────────────────────────────────────────────────
   const onSquareClick = useCallback((square) => {
-    const color  = playerColorRef.current;
-    const room   = roomIdRef.current;
-    const g      = gameRef.current;
+    const color = playerColorRef.current;
+    const room  = roomIdRef.current;
+    const g     = gameRef.current;
 
     if (!color || resultRef.current || !gameStartedRef.current) return;
-    if (g.turn() !== color) {
-      setSelectedSquare(null);
-      setOptionSquares({});
-      return;
-    }
+    if (g.turn() !== color) { setSelectedSquare(null); setOptionSquares({}); return; }
 
+    // Second click: try to move
     if (selectedSquare && selectedSquare !== square) {
       const piece = g.get(selectedSquare);
       const promotion =
@@ -224,15 +236,13 @@ export default function Game({ config, onLeave }) {
         ((color === "w" && square[1] === "8") || (color === "b" && square[1] === "1"))
           ? "q" : undefined;
 
-      // ✅ FIX: Validate the move locally first, but DON'T update state.
-      // Only emit to server. State update comes back via move_ack.
       try {
-        const copy = chessFromFen(g.fen());
+        const copy = loadFen(g.fen());
         const move = copy.move({ from: selectedSquare, to: square, promotion });
         if (move) {
-          // ✅ CHESS.COM STYLE: Optimistically update board immediately
+          // ✅ Optimistic update — board moves instantly
           gameRef.current = copy;
-          setGame(copy);
+          setFen(copy.fen());
           setLastMoveSquares({
             [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
             [square]:          { background: "rgba(255, 255, 0, 0.4)"  },
@@ -241,22 +251,22 @@ export default function Game({ config, onLeave }) {
           setOptionSquares({});
           socketRef.current?.emit("move", {
             roomId: room,
-            move:   { from: selectedSquare, to: square, promotion },
+            move: { from: selectedSquare, to: square, promotion },
           });
           return;
         }
-      } catch {
-        // Invalid move — fall through to select new square
-      }
+      } catch { /* fall through to select */ }
     }
 
-    getMoveOptions(square, g, color);
+    // First click (or invalid target): select piece and show options
+    getMoveOptions(square);
   }, [selectedSquare, getMoveOptions]);
 
+  // ─── Drag and drop ───────────────────────────────────────────────────────
   const onDrop = useCallback((sourceSquare, targetSquare, piece) => {
-    const color  = playerColorRef.current;
-    const room   = roomIdRef.current;
-    const g      = gameRef.current;
+    const color = playerColorRef.current;
+    const room  = roomIdRef.current;
+    const g     = gameRef.current;
 
     if (!color || resultRef.current || !gameStartedRef.current) return false;
     if (g.turn() !== color) return false;
@@ -267,38 +277,30 @@ export default function Game({ config, onLeave }) {
         ? "q" : undefined;
 
     try {
-      // Validate move on a copy first
-      const copy = chessFromFen(g.fen());
+      const copy = loadFen(g.fen());
       const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
       if (!move) return false;
 
-      // ✅ CHESS.COM STYLE: Optimistically update the board immediately so the
-      // piece snaps to the target square right away without waiting for the server.
-      // If the server rejects it (illegal_move), we roll back via move_ack/illegal_move.
+      // ✅ Optimistic update — piece lands immediately, no snap-back
       gameRef.current = copy;
-      setGame(copy);
-
-      // Show last-move highlight immediately
+      setFen(copy.fen());
       setLastMoveSquares({
         [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
         [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
       });
       setSelectedSquare(null);
       setOptionSquares({});
-
-      // Emit to server for authoritative confirmation
       socketRef.current?.emit("move", {
         roomId: room,
-        move:   { from: sourceSquare, to: targetSquare, promotion },
+        move: { from: sourceSquare, to: targetSquare, promotion },
       });
-
-      // Return true — piece stays on target square immediately (no snap-back)
-      return true;
+      return true; // ← piece stays, no snap-back
     } catch {
       return false;
     }
   }, []);
 
+  // ─── Auto-scroll move list ────────────────────────────────────────────────
   useEffect(() => {
     if (moveListRef.current) {
       moveListRef.current.scrollTop = moveListRef.current.scrollHeight;
@@ -329,14 +331,17 @@ export default function Game({ config, onLeave }) {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const canMove          = gameStarted && !gameResult && game.turn() === playerColor;
+  // ─── Derived values ───────────────────────────────────────────────────────
+  // Use gameRef (not state) for turn check so canMove is always accurate
+  const currentTurn      = gameRef.current.turn();
+  const canMove          = gameStarted && !gameResult && currentTurn === playerColor;
   const isMyTurn         = canMove;
   const boardOrientation = playerColor === "b" ? "black" : "white";
 
   const statusLabel = (() => {
     if (gameResult) return gameResult;
-    if (isMyTurn)   return game.isCheck() ? "Check! Your turn" : "Your turn";
-    if (game.isCheck() && opponentName) return "Check!";
+    if (isMyTurn)   return gameRef.current.isCheck() ? "Check! Your turn" : "Your turn";
+    if (gameRef.current.isCheck() && opponentName) return "Check!";
     return status;
   })();
 
@@ -433,7 +438,7 @@ export default function Game({ config, onLeave }) {
       <div className="game-board-wrap">
         <Chessboard
           id="main-board"
-          position={game.fen()}
+          position={fen}
           onPieceDrop={onDrop}
           onSquareClick={onSquareClick}
           boardOrientation={boardOrientation}
@@ -441,7 +446,7 @@ export default function Game({ config, onLeave }) {
           customBoardStyle={{ borderRadius: "8px", boxShadow: "0 16px 60px rgba(0,0,0,0.6)" }}
           customDarkSquareStyle={{ backgroundColor: "#8B6914" }}
           customLightSquareStyle={{ backgroundColor: "#F0D9A0" }}
-          arePiecesDraggable={canMove}
+          arePiecesDraggable={true}
           animationDuration={150}
         />
       </div>
