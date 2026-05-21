@@ -80,9 +80,10 @@ export default function Game({ config, onLeave }) {
       setStatus(`${whitePlayer} (White) vs ${blackPlayer} (Black)`);
     });
 
-    // Server ACKs our move
+    // Server ACKs our move — sync to server's authoritative FEN
     socket.on("move_ack", ({ move, fen }) => {
-      const g = new Chess(fen);
+      const g = new Chess();
+      g.load(fen);
       gameRef.current = g;
       setGame(g);
       setMoveHistory((h) => [...h, move]);
@@ -91,15 +92,15 @@ export default function Game({ config, onLeave }) {
       if (g.isCheck()) setStatus("Check!");
     });
 
-    // Opponent's move
+    // Opponent's move arrives — update board and highlight last move squares
     socket.on("opponent_move", ({ move, fen }) => {
-      const g = new Chess(fen);
+      const g = new Chess();
+      g.load(fen);
       gameRef.current = g;
       setGame(g);
       setMoveHistory((h) => [...h, move]);
       setSelectedSquare(null);
       setOptionSquares({});
-      // Highlight the last move squares
       const hist = g.history({ verbose: true });
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
@@ -109,31 +110,34 @@ export default function Game({ config, onLeave }) {
         });
       }
       if (g.isCheck()) setStatus("Check!");
+      else setStatus("");
     });
 
+    // Server rejected our move — revert to authoritative FEN
     socket.on("illegal_move", ({ fen }) => {
-      const g = new Chess(fen);
+      const g = new Chess();
+      g.load(fen);
       gameRef.current = g;
       setGame(g);
       setSelectedSquare(null);
       setOptionSquares({});
-      setStatus("Illegal move.");
     });
 
-    socket.on("game_over",           ({ result })  => { setGameResult(result); setStatus("Game over"); });
+    socket.on("game_over",            ({ result })  => { setGameResult(result); setStatus("Game over"); });
     socket.on("opponent_disconnected", ({ reconnecting: r }) => {
       setStatus(r ? "Opponent disconnected — waiting 30s…" : "Opponent disconnected.");
     });
-    socket.on("opponent_left",       ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
-    socket.on("error",               ({ message }) => setStatus(`Error: ${message}`));
-    socket.on("clock_update",        ({ times })   => setTimes(times));
-    socket.on("draw_offered",        ({ from })    => setDrawOffer(from));
-    socket.on("draw_declined",       ()            => { setDrawOffer(null); setStatus("Draw declined."); });
-    socket.on("rematch_requested",   ({ from })    => setRematchRequest(from));
-    socket.on("rematch_declined",    ()            => { setRematchRequest(null); setStatus("Rematch declined."); });
+    socket.on("opponent_left",        ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
+    socket.on("error",                ({ message }) => setStatus(`Error: ${message}`));
+    socket.on("clock_update",         ({ times })   => setTimes(times));
+    socket.on("draw_offered",         ({ from })    => setDrawOffer(from));
+    socket.on("draw_declined",        ()            => { setDrawOffer(null); setStatus("Draw declined."); });
+    socket.on("rematch_requested",    ({ from })    => setRematchRequest(from));
+    socket.on("rematch_declined",     ()            => { setRematchRequest(null); setStatus("Rematch declined."); });
 
     socket.on("rematch_start", ({ colors, fen }) => {
-      const fresh = new Chess(fen);
+      const fresh = new Chess();
+      fresh.load(fen);
       gameRef.current   = fresh;
       resultRef.current = null;
       const myColor = colors[socket.id];
@@ -155,13 +159,13 @@ export default function Game({ config, onLeave }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Show legal move dots when a piece is clicked
+  // Show legal-move dots when a piece is clicked
   const getMoveOptions = useCallback((square, g, color) => {
-    if (g.turn() !== color) return;
+    if (g.turn() !== color) return false;
     const moves = g.moves({ square, verbose: true });
-    if (!moves.length) { setOptionSquares({}); return; }
+    if (!moves.length) { setOptionSquares({}); return false; }
     const squares = {};
-    moves.forEach(({ to, flags }) => {
+    moves.forEach(({ to }) => {
       squares[to] = {
         background: g.get(to)
           ? "radial-gradient(circle, rgba(255,0,0,0.4) 60%, transparent 65%)"
@@ -172,6 +176,7 @@ export default function Game({ config, onLeave }) {
     squares[square] = { background: "rgba(255, 255, 0, 0.4)" };
     setOptionSquares(squares);
     setSelectedSquare(square);
+    return true;
   }, []);
 
   const onSquareClick = useCallback((square) => {
@@ -180,39 +185,53 @@ export default function Game({ config, onLeave }) {
     const g      = gameRef.current;
     const result = resultRef.current;
 
-    if (!color || result) return;
+    // FIX: Guard — must have color, no game over, game must have started (opponent present)
+    if (!color || result || !opponentRef.current) return;
+    // FIX: Guard — only act on your own turn
+    if (g.turn() !== color) {
+      setSelectedSquare(null);
+      setOptionSquares({});
+      return;
+    }
 
-    // If clicking a second square and we have a selected piece — try the move
+    // If a piece is already selected and we click a different square — try the move
     if (selectedSquare && selectedSquare !== square) {
-      const copy = new Chess(g.fen());
-      const piece = copy.get(selectedSquare);
+      const piece = g.get(selectedSquare);
 
       const promotion =
         piece?.type === "p" &&
         ((color === "w" && square[1] === "8") || (color === "b" && square[1] === "1"))
           ? "q" : undefined;
 
-      const move = copy.move({ from: selectedSquare, to: square, promotion });
+      // FIX: chess.js v1.x throws on illegal moves — must use try/catch
+      let move = null;
+      try {
+        const copy = new Chess();
+        copy.load(g.fen());
+        move = copy.move({ from: selectedSquare, to: square, promotion });
 
-      if (move) {
-        // Valid move — send to server and optimistically update
-        gameRef.current = copy;
-        setGame(copy);
-        setSelectedSquare(null);
-        setOptionSquares({});
-        setLastMoveSquares({
-          [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-          [square]:         { background: "rgba(255, 255, 0, 0.4)"  },
-        });
-        socketRef.current?.emit("move", {
-          roomId: room,
-          move: { from: selectedSquare, to: square, promotion },
-        });
-        return;
+        if (move) {
+          // Optimistically update UI and send to server
+          gameRef.current = copy;
+          setGame(copy);
+          setSelectedSquare(null);
+          setOptionSquares({});
+          setLastMoveSquares({
+            [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+            [square]:         { background: "rgba(255, 255, 0, 0.4)"  },
+          });
+          socketRef.current?.emit("move", {
+            roomId: room,
+            move:   { from: selectedSquare, to: square, promotion },
+          });
+          return;
+        }
+      } catch {
+        // Invalid move — fall through to select new square below
       }
     }
 
-    // Otherwise select the clicked piece
+    // Select the clicked square (show move dots or clear if no moves)
     getMoveOptions(square, g, color);
   }, [selectedSquare, getMoveOptions]);
 
@@ -222,7 +241,7 @@ export default function Game({ config, onLeave }) {
     const g      = gameRef.current;
     const result = resultRef.current;
 
-    if (!color || result) return false;
+    if (!color || result || !opponentRef.current) return false;
     if (g.turn() !== color) return false;
 
     const promotion =
@@ -230,25 +249,34 @@ export default function Game({ config, onLeave }) {
       (piece === "bP" && targetSquare[1] === "1")
         ? "q" : undefined;
 
-    const copy = new Chess(g.fen());
-    const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
-    if (!move) return false;
+    // FIX: chess.js v1.x throws on illegal moves — must use try/catch
+    let move = null;
+    try {
+      const copy = new Chess();
+      copy.load(g.fen());
+      move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
 
-    gameRef.current = copy;
-    setGame(copy);
-    setSelectedSquare(null);
-    setOptionSquares({});
-    setLastMoveSquares({
-      [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-      [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
-    });
+      if (!move) return false;
 
-    socketRef.current?.emit("move", {
-      roomId: room,
-      move: { from: sourceSquare, to: targetSquare, promotion },
-    });
+      gameRef.current = copy;
+      setGame(copy);
+      setSelectedSquare(null);
+      setOptionSquares({});
+      setLastMoveSquares({
+        [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+        [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
+      });
 
-    return true;
+      socketRef.current?.emit("move", {
+        roomId: room,
+        move:   { from: sourceSquare, to: targetSquare, promotion },
+      });
+
+      return true;
+    } catch {
+      // Illegal move — piece snaps back
+      return false;
+    }
   }, []);
 
   useEffect(() => {
@@ -282,7 +310,17 @@ export default function Game({ config, onLeave }) {
   };
 
   const isMyTurn         = game.turn() === playerColor && !gameResult && !!opponentName;
+  // FIX: board orientation uses playerColor state — add key={playerColor} on Chessboard
+  // to force remount when color is first assigned (react-chessboard v5 needs this)
   const boardOrientation = playerColor === "b" ? "black" : "white";
+
+  // Status label: show check when relevant, otherwise show turn/status text
+  const statusLabel = (() => {
+    if (gameResult) return gameResult;
+    if (isMyTurn)   return game.isCheck() ? "Check! Your turn" : "Your turn";
+    if (game.isCheck() && opponentName) return "Check!";
+    return status;
+  })();
 
   const movePairs = [];
   for (let i = 0; i < moveHistory.length; i += 2) {
@@ -309,12 +347,9 @@ export default function Game({ config, onLeave }) {
         </div>
 
         <div className="status-bar">
-          {gameResult
-            ? <span className="result-text">{gameResult}</span>
-            : <span className={isMyTurn ? "your-turn" : "their-turn"}>
-                {isMyTurn ? "Your turn" : status}
-              </span>
-          }
+          <span className={gameResult ? "result-text" : isMyTurn ? "your-turn" : "their-turn"}>
+            {statusLabel}
+          </span>
         </div>
 
         <div className="player-card me">
@@ -378,7 +413,10 @@ export default function Game({ config, onLeave }) {
       </div>
 
       <div className="game-board-wrap">
+        {/* FIX: key={playerColor} forces Chessboard to remount when color is assigned,
+            ensuring boardOrientation takes effect in react-chessboard v5 */}
         <Chessboard
+          key={playerColor}
           position={game.fen()}
           onPieceDrop={onDrop}
           onSquareClick={onSquareClick}
