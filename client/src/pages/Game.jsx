@@ -230,7 +230,13 @@ export default function Game({ config, onLeave }) {
         const copy = chessFromFen(g.fen());
         const move = copy.move({ from: selectedSquare, to: square, promotion });
         if (move) {
-          // Valid move — send to server, clear UI selection
+          // ✅ CHESS.COM STYLE: Optimistically update board immediately
+          gameRef.current = copy;
+          setGame(copy);
+          setLastMoveSquares({
+            [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+            [square]:          { background: "rgba(255, 255, 0, 0.4)"  },
+          });
           setSelectedSquare(null);
           setOptionSquares({});
           socketRef.current?.emit("move", {
@@ -260,26 +266,34 @@ export default function Game({ config, onLeave }) {
       (piece === "bP" && targetSquare[1] === "1")
         ? "q" : undefined;
 
-    // ✅ FIX: Validate locally, but do NOT call setGame here.
-    // Return false to let react-chessboard snap the piece back visually.
-    // The board will update for real when move_ack arrives from the server.
     try {
+      // Validate move on a copy first
       const copy = chessFromFen(g.fen());
       const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
       if (!move) return false;
 
-      // Legal move — emit to server, clear selection
+      // ✅ CHESS.COM STYLE: Optimistically update the board immediately so the
+      // piece snaps to the target square right away without waiting for the server.
+      // If the server rejects it (illegal_move), we roll back via move_ack/illegal_move.
+      gameRef.current = copy;
+      setGame(copy);
+
+      // Show last-move highlight immediately
+      setLastMoveSquares({
+        [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
+        [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
+      });
       setSelectedSquare(null);
       setOptionSquares({});
+
+      // Emit to server for authoritative confirmation
       socketRef.current?.emit("move", {
         roomId: room,
         move:   { from: sourceSquare, to: targetSquare, promotion },
       });
 
-      // ✅ Return false so react-chessboard snaps piece back to original square.
-      // It will redraw correctly once move_ack updates the position prop.
-      // This prevents the "ghost piece" issue during server round-trip.
-      return false;
+      // Return true — piece stays on target square immediately (no snap-back)
+      return true;
     } catch {
       return false;
     }
@@ -428,6 +442,7 @@ export default function Game({ config, onLeave }) {
           customDarkSquareStyle={{ backgroundColor: "#8B6914" }}
           customLightSquareStyle={{ backgroundColor: "#F0D9A0" }}
           arePiecesDraggable={canMove}
+          animationDuration={150}
         />
       </div>
 
