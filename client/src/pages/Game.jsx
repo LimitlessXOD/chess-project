@@ -4,15 +4,7 @@ import { Chessboard } from "react-chessboard";
 import { io } from "socket.io-client";
 import "./Game.css";
 
-// Use an env var so this works outside your local network.
-// In your .env file: VITE_SOCKET_URL=http://your-server-address:3001
-// Falls back to localhost for local dev.
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
-
-// Session storage keys for reconnect
-const SESSION_ROOM_KEY   = "chess_roomId";
-const SESSION_NAME_KEY   = "chess_playerName";
-const SESSION_COLOR_KEY  = "chess_color";
 
 export default function Game({ config, onLeave }) {
   const { mode, playerName, roomCode } = config;
@@ -28,7 +20,6 @@ export default function Game({ config, onLeave }) {
   const [times, setTimes]                   = useState({ w: null, b: null });
   const [drawOffer, setDrawOffer]           = useState(null);
   const [rematchRequest, setRematchRequest] = useState(null);
-  const [reconnecting, setReconnecting]     = useState(false);
 
   const socketRef      = useRef(null);
   const moveListRef    = useRef(null);
@@ -44,56 +35,24 @@ export default function Game({ config, onLeave }) {
   useEffect(() => { gameRef.current        = game; }, [game]);
   useEffect(() => { resultRef.current      = gameResult; }, [gameResult]);
 
-  // ── Sync game state from a server-authoritative FEN ─────────────────────────
-  const syncFromFen = useCallback((fen, moves) => {
-    const g = new Chess(fen);
-    gameRef.current = g;
-    setGame(g);
-    if (moves) setMoveHistory(moves);
-  }, []);
-
-  // ── Check game state and update status ──────────────────────────────────────
-  // NOTE: server now handles game_over for checkmate/draw; this is only used
-  // locally to show "Check!" status — actual game termination comes from server.
-  const checkLocalState = useCallback((g) => {
-    if (g.isCheck() && !g.isCheckmate()) setStatus("Check!");
-  }, []);
-
   useEffect(() => {
     const socket = io(SOCKET_URL);
     socketRef.current = socket;
 
     socket.on("connect", () => {
-      // Attempt reconnect if we have a stored session
-      const storedRoom  = sessionStorage.getItem(SESSION_ROOM_KEY);
-      const storedName  = sessionStorage.getItem(SESSION_NAME_KEY);
-      const storedColor = sessionStorage.getItem(SESSION_COLOR_KEY);
-
-      if (storedRoom && storedName) {
-        setReconnecting(true);
-        setStatus("Reconnecting…");
-        socket.emit("reconnect_room", { roomId: storedRoom, playerName: storedName });
-        if (storedColor) {
-          playerColorRef.current = storedColor;
-          setPlayerColor(storedColor);
-        }
-      } else if (mode === "create") {
+      if (mode === "create") {
         socket.emit("create_room", { playerName });
       } else {
         socket.emit("join_room", { roomId: roomCode, playerName });
       }
     });
 
-    // ── Room setup events ──────────────────────────────────────────────────────
     socket.on("room_created", ({ roomId, color }) => {
       roomIdRef.current      = roomId;
       playerColorRef.current = color;
       setRoomId(roomId);
       setPlayerColor(color);
       setStatus("Waiting for opponent… Share the room code!");
-      sessionStorage.setItem(SESSION_ROOM_KEY, roomId);
-      sessionStorage.setItem(SESSION_NAME_KEY, playerName);
-      sessionStorage.setItem(SESSION_COLOR_KEY, color);
     });
 
     socket.on("room_joined", ({ roomId, color, opponentName }) => {
@@ -104,38 +63,26 @@ export default function Game({ config, onLeave }) {
       setPlayerColor(color);
       setOpponentName(opponentName);
       setStatus(`Playing against ${opponentName}`);
-      sessionStorage.setItem(SESSION_ROOM_KEY, roomId);
-      sessionStorage.setItem(SESSION_NAME_KEY, playerName);
-      sessionStorage.setItem(SESSION_COLOR_KEY, color);
     });
 
     socket.on("opponent_joined", ({ opponentName }) => {
       opponentRef.current = opponentName;
       setOpponentName(opponentName);
+      setStatus(`Playing against ${opponentName}`);
     });
 
     socket.on("game_start", ({ whitePlayer, blackPlayer }) => {
-      setStatus(`Playing — ${whitePlayer} (White) vs ${blackPlayer} (Black)`);
+      setStatus(`${whitePlayer} (White) vs ${blackPlayer} (Black)`);
     });
 
-    // ── Reconnect ──────────────────────────────────────────────────────────────
-    socket.on("reconnected", ({ color, fen, moves, times: t, opponentName: opp, chatHistory }) => {
-      setReconnecting(false);
-      playerColorRef.current = color;
-      setPlayerColor(color);
-      syncFromFen(fen, moves);
-      setTimes(t);
-      if (opp) { opponentRef.current = opp; setOpponentName(opp); }
-      setStatus(opp ? `Playing against ${opp}` : "Waiting for opponent to reconnect…");
+    // Server ACKs our move — update board to authoritative state
+    socket.on("move_ack", ({ move, fen }) => {
+      const g = new Chess(fen);
+      gameRef.current = g;
+      setGame(g);
+      setMoveHistory((h) => [...h, move]);
+      if (g.isCheck()) setStatus("Check!");
     });
-
-    socket.on("opponent_reconnected", ({ name }) => {
-      opponentRef.current = name;
-      setOpponentName(name);
-      setStatus(`${name} reconnected`);
-    });
-
-    // ── Move events ────────────────────────────────────────────────────────────
 
     // Opponent's move arrives with server-authoritative FEN
     socket.on("opponent_move", ({ move, fen }) => {
@@ -143,94 +90,66 @@ export default function Game({ config, onLeave }) {
       gameRef.current = g;
       setGame(g);
       setMoveHistory((h) => [...h, move]);
-      checkLocalState(g);
+      if (g.isCheck()) setStatus("Check!");
     });
 
-    // Server ACKs our own move with authoritative FEN (keeps us in sync)
-    socket.on("move_ack", ({ move, fen }) => {
-      const g = new Chess(fen);
-      gameRef.current = g;
-      setGame(g);
-      // move already added optimistically; only add if not duplicate
-      setMoveHistory((h) => {
-        if (h[h.length - 1] === move) return h;
-        return [...h, move];
-      });
-    });
-
-    // Server rejected an illegal move — revert to authoritative FEN
+    // Server rejected move — revert to authoritative FEN
     socket.on("illegal_move", ({ fen }) => {
       const g = new Chess(fen);
       gameRef.current = g;
       setGame(g);
-      setStatus("Illegal move — reverted.");
+      setStatus("Illegal move.");
     });
 
-    // ── Game over / disconnect ─────────────────────────────────────────────────
     socket.on("game_over", ({ result }) => {
       setGameResult(result);
       setStatus("Game over");
-      sessionStorage.removeItem(SESSION_ROOM_KEY);
-      sessionStorage.removeItem(SESSION_NAME_KEY);
-      sessionStorage.removeItem(SESSION_COLOR_KEY);
     });
 
     socket.on("opponent_disconnected", ({ reconnecting: oppReconnecting }) => {
-      setStatus(
-        oppReconnecting
-          ? "Opponent disconnected — waiting 30 s for reconnect…"
-          : "Opponent disconnected."
+      setStatus(oppReconnecting
+        ? "Opponent disconnected — waiting 30s for reconnect…"
+        : "Opponent disconnected."
       );
     });
 
-    socket.on("opponent_left", () => {
-      setStatus("Opponent left the game.");
-      setGameResult("Opponent left.");
-    });
-
-    socket.on("error", ({ message }) => setStatus(`Error: ${message}`));
-
-    // ── Timers ─────────────────────────────────────────────────────────────────
-    socket.on("clock_update", ({ times }) => setTimes(times));
-
-    // ── Draw ───────────────────────────────────────────────────────────────────
-    socket.on("draw_offered",  ({ from }) => setDrawOffer(from));
-    socket.on("draw_declined", ()         => { setDrawOffer(null); setStatus("Draw offer declined."); });
-
-    // ── Rematch ────────────────────────────────────────────────────────────────
-    socket.on("rematch_requested", ({ from }) => setRematchRequest(from));
-    socket.on("rematch_declined",  ()         => { setRematchRequest(null); setStatus("Rematch declined."); });
+    socket.on("opponent_left",       ()            => { setStatus("Opponent left."); setGameResult("Opponent left."); });
+    socket.on("error",               ({ message }) => setStatus(`Error: ${message}`));
+    socket.on("clock_update",        ({ times })   => setTimes(times));
+    socket.on("draw_offered",        ({ from })    => setDrawOffer(from));
+    socket.on("draw_declined",       ()            => { setDrawOffer(null); setStatus("Draw declined."); });
+    socket.on("rematch_requested",   ({ from })    => setRematchRequest(from));
+    socket.on("rematch_declined",    ()            => { setRematchRequest(null); setStatus("Rematch declined."); });
 
     socket.on("rematch_start", ({ colors, fen }) => {
       const fresh = new Chess(fen);
       gameRef.current   = fresh;
       resultRef.current = null;
+      const myColor = colors[socket.id];
+      playerColorRef.current = myColor;
       setGame(fresh);
       setMoveHistory([]);
       setGameResult(null);
       setRematchRequest(null);
       setDrawOffer(null);
       setTimes({ w: null, b: null });
-      setPlayerColor(colors[socket.id]);
-      playerColorRef.current = colors[socket.id];
-      sessionStorage.setItem(SESSION_COLOR_KEY, colors[socket.id]);
+      setPlayerColor(myColor);
       setStatus(`Playing against ${opponentRef.current}`);
     });
 
-    return () => {
-      socket.disconnect();
-    };
+    return () => socket.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── onDrop — optimistic move, server will ACK or reject ──────────────────────
+  // No optimistic updates — just validate locally and send to server.
+  // Server responds with move_ack (accepted) or illegal_move (rejected).
   const onDrop = useCallback((sourceSquare, targetSquare, piece) => {
     const color  = playerColorRef.current;
     const room   = roomIdRef.current;
     const g      = gameRef.current;
     const result = resultRef.current;
 
-    if (!color || result || reconnecting) return false;
+    if (!color || result) return false;
     if (g.turn() !== color) return false;
 
     const promotion =
@@ -238,26 +157,23 @@ export default function Game({ config, onLeave }) {
       (piece === "bP" && targetSquare[1] === "1")
         ? "q" : undefined;
 
-    // Validate locally first so the board doesn't flicker on legal moves
+    // Local validation so illegal drags snap back immediately
     const copy = new Chess(g.fen());
-    const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
-    if (!move) return false;
+    const localMove = copy.move({ from: sourceSquare, to: targetSquare, promotion });
+    if (!localMove) return false;
 
-    // Optimistic update
-    gameRef.current = copy;
-    setGame(copy);
-    setMoveHistory((h) => [...h, move.san]);
-    checkLocalState(copy);
-
-    // Send SAN to server — server validates and responds with move_ack or illegal_move
-    // NOTE: we do NOT send fen — server owns board state
+    // Send to server — board updates only when move_ack comes back
     socketRef.current?.emit("move", {
       roomId: room,
       move: { from: sourceSquare, to: targetSquare, promotion },
     });
 
+    // Optimistically show the move so it feels responsive
+    gameRef.current = copy;
+    setGame(copy);
+
     return true;
-  }, [checkLocalState, reconnecting]);
+  }, []);
 
   useEffect(() => {
     if (moveListRef.current) {
@@ -289,7 +205,7 @@ export default function Game({ config, onLeave }) {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const isMyTurn       = game.turn() === playerColor && !gameResult && !!opponentName;
+  const isMyTurn         = game.turn() === playerColor && !gameResult && !!opponentName;
   const boardOrientation = playerColor === "b" ? "black" : "white";
 
   const movePairs = [];
@@ -315,13 +231,11 @@ export default function Game({ config, onLeave }) {
         </div>
 
         <div className="status-bar">
-          {reconnecting
-            ? <span className="their-turn">Reconnecting…</span>
-            : gameResult
-              ? <span className="result-text">{gameResult}</span>
-              : <span className={isMyTurn ? "your-turn" : "their-turn"}>
-                  {isMyTurn ? "Your turn" : status}
-                </span>
+          {gameResult
+            ? <span className="result-text">{gameResult}</span>
+            : <span className={isMyTurn ? "your-turn" : "their-turn"}>
+                {isMyTurn ? "Your turn" : status}
+              </span>
           }
         </div>
 
@@ -362,7 +276,10 @@ export default function Game({ config, onLeave }) {
             <p>{rematchRequest} wants a rematch</p>
             <div className="offer-actions">
               <button className="play-btn primary small" onClick={requestRematch}>Accept</button>
-              <button className="play-btn ghost small"   onClick={() => { socketRef.current?.emit("rematch_decline", { roomId }); setRematchRequest(null); }}>Decline</button>
+              <button className="play-btn ghost small" onClick={() => {
+                socketRef.current?.emit("rematch_decline", { roomId });
+                setRematchRequest(null);
+              }}>Decline</button>
             </div>
           </div>
         )}
@@ -390,7 +307,7 @@ export default function Game({ config, onLeave }) {
           customBoardStyle={{ borderRadius: "8px", boxShadow: "0 16px 60px rgba(0,0,0,0.6)" }}
           customDarkSquareStyle={{ backgroundColor: "#8B6914" }}
           customLightSquareStyle={{ backgroundColor: "#F0D9A0" }}
-          arePiecesDraggable={isMyTurn && !reconnecting}
+          arePiecesDraggable={isMyTurn}
         />
       </div>
 
