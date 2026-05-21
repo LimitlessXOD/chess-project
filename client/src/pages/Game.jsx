@@ -22,7 +22,6 @@ export default function Game({ config, onLeave }) {
   const [rematchRequest, setRematchRequest] = useState(null);
   const [gameStarted, setGameStarted]       = useState(false);
 
-  // Move highlights
   const [selectedSquare, setSelectedSquare]   = useState(null);
   const [optionSquares, setOptionSquares]     = useState({});
   const [lastMoveSquares, setLastMoveSquares] = useState({});
@@ -36,15 +35,9 @@ export default function Game({ config, onLeave }) {
   const resultRef      = useRef(null);
   const gameStartedRef = useRef(false);
 
-  // Helper: create Chess instance from FEN safely
   const chessFromFen = (fen) => {
-    try {
-      return new Chess(fen);
-    } catch {
-      const g = new Chess();
-      g.load(fen);
-      return g;
-    }
+    try { return new Chess(fen); }
+    catch { const g = new Chess(); g.load(fen); return g; }
   };
 
   useEffect(() => {
@@ -75,7 +68,6 @@ export default function Game({ config, onLeave }) {
       setPlayerColor(color);
       setOpponentName(opp);
       setStatus(`Playing against ${opp}`);
-      // Joiner's game has already started (opponent is the creator)
       gameStartedRef.current = true;
       setGameStarted(true);
     });
@@ -94,7 +86,7 @@ export default function Game({ config, onLeave }) {
       setStatus(`${whitePlayer} (White) vs ${blackPlayer} (Black)`);
     });
 
-    // Server ACKs our move — sync to server's authoritative FEN
+    // ✅ FIX: Only update state from server events — never from local move attempts
     socket.on("move_ack", ({ move, fen }) => {
       const g = chessFromFen(fen);
       gameRef.current = g;
@@ -102,11 +94,19 @@ export default function Game({ config, onLeave }) {
       setMoveHistory((h) => [...h, move]);
       setSelectedSquare(null);
       setOptionSquares({});
+      // Update last move highlights
+      const hist = g.history({ verbose: true });
+      if (hist.length > 0) {
+        const last = hist[hist.length - 1];
+        setLastMoveSquares({
+          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
+          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
+        });
+      }
       if (g.isCheck()) setStatus("Check!");
       else setStatus("");
     });
 
-    // Opponent's move arrives
     socket.on("opponent_move", ({ move, fen }) => {
       const g = chessFromFen(fen);
       gameRef.current = g;
@@ -126,7 +126,6 @@ export default function Game({ config, onLeave }) {
       else setStatus("");
     });
 
-    // Server rejected our move — revert to authoritative FEN
     socket.on("illegal_move", ({ fen }) => {
       const g = chessFromFen(fen);
       gameRef.current = g;
@@ -168,7 +167,7 @@ export default function Game({ config, onLeave }) {
       setStatus(`Playing against ${opponentRef.current}`);
     });
 
-    socket.on("reconnected", ({ color, fen, moves, times: t, opponentName: opp, chatHistory }) => {
+    socket.on("reconnected", ({ color, fen, moves, times: t, opponentName: opp }) => {
       const g = chessFromFen(fen);
       gameRef.current        = g;
       playerColorRef.current = color;
@@ -187,7 +186,6 @@ export default function Game({ config, onLeave }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Show legal-move dots when a piece is clicked
   const getMoveOptions = useCallback((square, g, color) => {
     if (g.turn() !== color) return false;
     const moves = g.moves({ square, verbose: true });
@@ -211,9 +209,8 @@ export default function Game({ config, onLeave }) {
     const color  = playerColorRef.current;
     const room   = roomIdRef.current;
     const g      = gameRef.current;
-    const result = resultRef.current;
 
-    if (!color || result || !gameStartedRef.current) return;
+    if (!color || resultRef.current || !gameStartedRef.current) return;
     if (g.turn() !== color) {
       setSelectedSquare(null);
       setOptionSquares({});
@@ -227,19 +224,15 @@ export default function Game({ config, onLeave }) {
         ((color === "w" && square[1] === "8") || (color === "b" && square[1] === "1"))
           ? "q" : undefined;
 
-      let move = null;
+      // ✅ FIX: Validate the move locally first, but DON'T update state.
+      // Only emit to server. State update comes back via move_ack.
       try {
         const copy = chessFromFen(g.fen());
-        move = copy.move({ from: selectedSquare, to: square, promotion });
+        const move = copy.move({ from: selectedSquare, to: square, promotion });
         if (move) {
-          gameRef.current = copy;
-          setGame(copy);
+          // Valid move — send to server, clear UI selection
           setSelectedSquare(null);
           setOptionSquares({});
-          setLastMoveSquares({
-            [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-            [square]:         { background: "rgba(255, 255, 0, 0.4)"  },
-          });
           socketRef.current?.emit("move", {
             roomId: room,
             move:   { from: selectedSquare, to: square, promotion },
@@ -258,9 +251,8 @@ export default function Game({ config, onLeave }) {
     const color  = playerColorRef.current;
     const room   = roomIdRef.current;
     const g      = gameRef.current;
-    const result = resultRef.current;
 
-    if (!color || result || !gameStartedRef.current) return false;
+    if (!color || resultRef.current || !gameStartedRef.current) return false;
     if (g.turn() !== color) return false;
 
     const promotion =
@@ -268,24 +260,26 @@ export default function Game({ config, onLeave }) {
       (piece === "bP" && targetSquare[1] === "1")
         ? "q" : undefined;
 
+    // ✅ FIX: Validate locally, but do NOT call setGame here.
+    // Return false to let react-chessboard snap the piece back visually.
+    // The board will update for real when move_ack arrives from the server.
     try {
       const copy = chessFromFen(g.fen());
       const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
       if (!move) return false;
 
-      gameRef.current = copy;
-      setGame(copy);
+      // Legal move — emit to server, clear selection
       setSelectedSquare(null);
       setOptionSquares({});
-      setLastMoveSquares({
-        [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-        [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
-      });
       socketRef.current?.emit("move", {
         roomId: room,
         move:   { from: sourceSquare, to: targetSquare, promotion },
       });
-      return true;
+
+      // ✅ Return false so react-chessboard snaps piece back to original square.
+      // It will redraw correctly once move_ack updates the position prop.
+      // This prevents the "ghost piece" issue during server round-trip.
+      return false;
     } catch {
       return false;
     }
@@ -321,7 +315,6 @@ export default function Game({ config, onLeave }) {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  // Dragging is allowed only when it's your turn and game is active
   const canMove          = gameStarted && !gameResult && game.turn() === playerColor;
   const isMyTurn         = canMove;
   const boardOrientation = playerColor === "b" ? "black" : "white";
