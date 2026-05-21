@@ -60,20 +60,21 @@ export default function Game({ config, onLeave }) {
       setStatus("Waiting for opponent… Share the room code!");
     });
 
-    socket.on("room_joined", ({ roomId, color, opponentName }) => {
+
+    socket.on("room_joined", ({ roomId, color, opponentName: opp }) => {
       roomIdRef.current      = roomId;
       playerColorRef.current = color;
-      opponentRef.current    = opponentName;
+      opponentRef.current    = opp;   // FIX: sync ref immediately, don't wait for useEffect
       setRoomId(roomId);
       setPlayerColor(color);
-      setOpponentName(opponentName);
-      setStatus(`Playing against ${opponentName}`);
+      setOpponentName(opp);
+      setStatus(`Playing against ${opp}`);
     });
 
-    socket.on("opponent_joined", ({ opponentName }) => {
-      opponentRef.current = opponentName;
-      setOpponentName(opponentName);
-      setStatus(`Playing against ${opponentName}`);
+    socket.on("opponent_joined", ({ opponentName: opp }) => {
+      opponentRef.current = opp;   // FIX: sync ref immediately so moves unblock at once
+      setOpponentName(opp);
+      setStatus(`Playing against ${opp}`);
     });
 
     socket.on("game_start", ({ whitePlayer, blackPlayer }) => {
