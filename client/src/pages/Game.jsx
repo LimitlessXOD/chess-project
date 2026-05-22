@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { io } from "socket.io-client";
@@ -204,7 +204,7 @@ export default function Game({ config, onLeave }) {
     });
 
     socket.on("reconnected", ({ color, fen: f, moves, times: t, opponentName: opp }) => {
-      const g = applyServerFen(f);
+      applyServerFen(f);
       playerColorRef.current = color;
       opponentRef.current    = opp;
       gameStartedRef.current = true;
@@ -379,7 +379,6 @@ export default function Game({ config, onLeave }) {
 
     if (!isLocal) {
       const color = playerColorRef.current;
-      const room  = roomIdRef.current;
       if (!color) {
         addLog("onDrop: Error - Player color is null");
         return false;
@@ -519,16 +518,21 @@ export default function Game({ config, onLeave }) {
   };
 
   // ─── Derived values ───────────────────────────────────────────────────────
-  // Use gameRef (not state) for turn check so canMove is always accurate
-  const currentTurn      = gameRef.current.turn();
+  // Create a reactive game instance for rendering purposes, derived from the fen state.
+  // This avoids accessing refs during render and keeps it perfectly in sync with React's state model.
+  const gameForRender = useMemo(() => {
+    return loadFen(fen);
+  }, [fen]);
+
+  const currentTurn      = gameForRender.turn();
   const canMove          = gameStarted && !gameResult && currentTurn === playerColor;
   const isMyTurn         = canMove;
   const boardOrientation = playerColor === "b" ? "black" : "white";
 
   const statusLabel = (() => {
     if (gameResult) return gameResult;
-    if (isMyTurn)   return gameRef.current.isCheck() ? "Check! Your turn" : "Your turn";
-    if (gameRef.current.isCheck() && opponentName) return "Check!";
+    if (isMyTurn)   return gameForRender.isCheck() ? "Check! Your turn" : "Your turn";
+    if (gameForRender.isCheck() && opponentName) return "Check!";
     return status;
   })();
 
