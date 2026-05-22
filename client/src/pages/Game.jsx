@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Chess } from "chess.js";
-import { Chessboard } from "react-chessboard";
+import { Chessboard } from "../components/Chessboard";
 import { io } from "socket.io-client";
 import "./Game.css";
 
@@ -150,8 +150,8 @@ export default function Game({ config, onLeave }) {
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
         setLastMoveSquares({
-          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
-          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
+          [last.from]: { backgroundColor: "rgba(235, 210, 140, 0.25)" },
+          [last.to]:   { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
         });
       }
       if (gameRef.current.isCheck()) setStatus("Check!");
@@ -167,8 +167,8 @@ export default function Game({ config, onLeave }) {
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
         setLastMoveSquares({
-          [last.from]: { background: "rgba(255, 255, 0, 0.25)" },
-          [last.to]:   { background: "rgba(255, 255, 0, 0.4)"  },
+          [last.from]: { backgroundColor: "rgba(235, 210, 140, 0.25)" },
+          [last.to]:   { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
         });
       }
       if (g.isCheck()) setStatus("Check!");
@@ -262,21 +262,22 @@ export default function Game({ config, onLeave }) {
     addLog(`getMoveOptions: Highlighted ${moves.length} moves for ${square}`);
     const squares = {};
     moves.forEach(({ to }) => {
-      squares[to] = {
-        background: g.get(to)
-          ? "radial-gradient(circle, rgba(255,0,0,0.4) 60%, transparent 65%)"
-          : "radial-gradient(circle, rgba(0,0,0,0.25) 30%, transparent 33%)",
-        borderRadius: "50%",
-      };
+      squares[to] = g.get(to)
+        ? { boxShadow: "inset 0 0 0 3px rgba(210, 110, 110, 0.75)", borderRadius: "50%" }
+        : { background: "radial-gradient(circle, rgba(112, 138, 131, 0.55) 18%, transparent 20%)" };
     });
-    squares[square] = { background: "rgba(255, 255, 0, 0.4)" };
+    squares[square] = {
+      backgroundColor: "rgba(210, 110, 110, 0.55)",
+      outline: "2px solid rgba(210, 110, 110, 0.9)",
+      outlineOffset: "-2px"
+    };
     setOptionSquares(squares);
     setSelectedSquare(square);
     return true;
   }, [mode, addLog]);
 
   // ─── Click to move ────────────────────────────────────────────────────────
-  const onSquareClick = useCallback((square) => {
+  const onSquareClick = useCallback(({ square }) => {
     const isLocal = mode === "local";
     const g     = gameRef.current;
 
@@ -311,18 +312,18 @@ export default function Game({ config, onLeave }) {
 
     // Second click: try to move
     if (selectedSquare && selectedSquare !== square) {
-      const piece = g.get(selectedSquare);
+      const selectedPiece = g.get(selectedSquare);
 
       // Check turn matches piece in local mode
-      if (isLocal && piece?.color !== g.turn()) {
-        addLog(`onSquareClick: Select wrong color piece (color=${piece?.color}, turn=${g.turn()})`);
+      if (isLocal && selectedPiece?.color !== g.turn()) {
+        addLog(`onSquareClick: Select wrong color piece (color=${selectedPiece?.color}, turn=${g.turn()})`);
         setSelectedSquare(null);
         setOptionSquares({});
         return;
       }
 
       const promotion =
-        piece?.type === "p" &&
+        selectedPiece?.type === "p" &&
         ((g.turn() === "w" && square[1] === "8") || (g.turn() === "b" && square[1] === "1"))
           ? "q" : undefined;
 
@@ -335,8 +336,8 @@ export default function Game({ config, onLeave }) {
           setFen(g.fen());
           setMoveHistory((h) => [...h, move.san]);
           setLastMoveSquares({
-            [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-            [square]:          { background: "rgba(255, 255, 0, 0.4)"  },
+            [selectedSquare]: { backgroundColor: "rgba(235, 210, 140, 0.25)" },
+            [square]:          { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
           });
           setSelectedSquare(null);
           setOptionSquares({});
@@ -389,7 +390,7 @@ export default function Game({ config, onLeave }) {
   }, [selectedSquare, getMoveOptions, mode, gameStarted, autoFlip, addLog]);
 
   // ─── Drag and drop ───────────────────────────────────────────────────────
-  const onDrop = useCallback((sourceSquare, targetSquare, piece) => {
+  const onDrop = useCallback(({ piece, sourceSquare, targetSquare }) => {
     const isLocal = mode === "local";
     const g     = gameRef.current;
 
@@ -443,8 +444,8 @@ export default function Game({ config, onLeave }) {
       setFen(g.fen());
       setMoveHistory((h) => [...h, move.san]);
       setLastMoveSquares({
-        [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
-        [targetSquare]: { background: "rgba(255, 255, 0, 0.4)"  },
+        [sourceSquare]: { backgroundColor: "rgba(235, 210, 140, 0.25)" },
+        [targetSquare]: { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
       });
       setSelectedSquare(null);
       setOptionSquares({});
@@ -728,8 +729,8 @@ export default function Game({ config, onLeave }) {
           boardOrientation={boardOrientation}
           customSquareStyles={customSquareStyles}
           customBoardStyle={{ borderRadius: "8px", boxShadow: "0 16px 60px rgba(0,0,0,0.6)" }}
-          customDarkSquareStyle={{ backgroundColor: "#8B6914" }}
-          customLightSquareStyle={{ backgroundColor: "#F0D9A0" }}
+          customDarkSquareStyle={{ backgroundColor: "#708A83" }}
+          customLightSquareStyle={{ backgroundColor: "#ECE3D4" }}
           arePiecesDraggable={true}
           animationDuration={150}
         />
@@ -753,8 +754,8 @@ export default function Game({ config, onLeave }) {
         </div>
 
         <div className="board-legend">
-          <div className="legend-item"><span className="legend-sq dark" /> Dark: #8B6914</div>
-          <div className="legend-item"><span className="legend-sq light" /> Light: #F0D9A0</div>
+          <div className="legend-item"><span className="legend-sq dark" style={{ backgroundColor: "#708A83" }} /> Sage Green: #708A83</div>
+          <div className="legend-item"><span className="legend-sq light" style={{ backgroundColor: "#ECE3D4" }} /> Cream: #ECE3D4</div>
         </div>
 
         {mode === "local" && (

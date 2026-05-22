@@ -1,0 +1,103 @@
+.custom-chessboard-wrapper {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.7);
+  background: #1a1208;
+  border: 6px solid #32251a;
+  outline: 1px solid rgba(200, 168, 75, 0.22);
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.custom-chessboard-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.custom-board-square {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: filter 0.2s ease, background-color 0.15s ease, outline 0.15s ease, box-shadow 0.15s ease;
+  overflow: hidden;
+}
+
+.custom-board-square:hover {
+  filter: brightness(1.03);
+}
+
+.custom-board-square.drag-over {
+  filter: brightness(1.15) contrast(1.05) !important;
+  box-shadow: inset 0 0 16px rgba(255, 255, 255, 0.35);
+}
+
+/* Notation Text Overlays */
+.notation-rank {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 1;
+  font-family: 'Lato', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+.notation-file {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  opacity: 0.85;
+  pointer-events: none;
+  z-index: 1;
+  font-family: 'Lato', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+/* Piece Container & Animation */
+.custom-piece-container {
+  width: 88%;
+  height: 88%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  cursor: grab;
+  transition: transform 0.15s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.custom-piece-container:active {
+  cursor: grabbing;
+}
+
+.custom-piece-container.dragging {
+  opacity: 0.3;
+  transform: scale(0.8);
+}
+
+.custom-piece-container svg {
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.32));
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+
+.custom-piece-container:hover svg {
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.45));
+  transform: scale(1.04);
+}

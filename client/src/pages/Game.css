@@ -250,8 +250,8 @@
   border-radius: 3px;
   display: inline-block;
 }
-.legend-sq.dark { background: #8B6914; }
-.legend-sq.light { background: #F0D9A0; }
+.legend-sq.dark { background: #708A83; }
+.legend-sq.light { background: #ECE3D4; }
 
 /* ── Responsive ── */
 @media (max-width: 900px) {
