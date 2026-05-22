@@ -11,7 +11,7 @@ export default function Game({ config, onLeave }) {
 
   // ─── Single source of truth: FEN string (not a Chess object in state) ───────
   // This avoids stale Chess object bugs. We keep a Chess object only in a ref.
-  const [fen, setFen]                        = useState("start");
+  const [fen, setFen]                        = useState(mode === "local" ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : "start");
   const [playerColor, setPlayerColor]        = useState(mode === "local" ? "w" : null);
   const [roomId, setRoomId]                  = useState(null);
   const [opponentName, setOpponentName]      = useState(null);
@@ -30,6 +30,13 @@ export default function Game({ config, onLeave }) {
   // ─── Local Sandbox & Connection States ──────────────────────────────────────
   const [autoFlip, setAutoFlip]              = useState(true);
   const [connectionStatus, setConnectionStatus] = useState(mode === "local" ? "connected" : "connecting");
+
+  // ─── System Logs Debug overlay ──────────────────────────────────────────────
+  const [logs, setLogs] = useState([]);
+  const addLog = useCallback((msg) => {
+    console.log("[ChessLog]", msg);
+    setLogs((prev) => [msg, ...prev].slice(0, 8));
+  }, []);
 
   // ─── Refs (always current, no stale closure issues) ──────────────────────────
   const socketRef       = useRef(null);
@@ -222,10 +229,19 @@ export default function Game({ config, onLeave }) {
     if (!isLocal && g.turn() !== color) return false;
     // In local mode, only allow highlighting/moving pieces of the active turn
     const piece = g.get(square);
-    if (isLocal && piece?.color !== g.turn()) return false;
+    if (isLocal && piece?.color !== g.turn()) {
+      addLog(`getMoveOptions: Piece color mismatch (piece=${piece?.color}, turn=${g.turn()})`);
+      return false;
+    }
 
     const moves = g.moves({ square, verbose: true });
-    if (!moves.length) { setOptionSquares({}); return false; }
+    if (!moves.length) {
+      addLog(`getMoveOptions: No moves available for ${square}`);
+      setOptionSquares({});
+      return false;
+    }
+
+    addLog(`getMoveOptions: Highlighted ${moves.length} moves for ${square}`);
     const squares = {};
     moves.forEach(({ to }) => {
       squares[to] = {
@@ -239,37 +255,66 @@ export default function Game({ config, onLeave }) {
     setOptionSquares(squares);
     setSelectedSquare(square);
     return true;
-  }, [mode]);
+  }, [mode, addLog]);
 
   // ─── Click to move ────────────────────────────────────────────────────────
   const onSquareClick = useCallback((square) => {
-    const color = playerColorRef.current;
-    const room  = roomIdRef.current;
-    const g     = gameRef.current;
     const isLocal = mode === "local";
+    const g     = gameRef.current;
+
+    addLog(`onSquareClick: Square clicked ${square}`);
 
     if (!isLocal) {
-      if (!color || resultRef.current) return;
-      if (!gameStarted) return; // Prevent early moves!
-      if (g.turn() !== color) { setSelectedSquare(null); setOptionSquares({}); return; }
+      const color = playerColorRef.current;
+      if (!color) {
+        addLog("onSquareClick: Error - Player color is null");
+        return;
+      }
+      if (resultRef.current) {
+        addLog("onSquareClick: Error - Game already over");
+        return;
+      }
+      if (!gameStarted) {
+        addLog("onSquareClick: Error - Game not started yet");
+        return;
+      }
+      if (g.turn() !== color) {
+        addLog(`onSquareClick: Error - Not your turn (turn=${g.turn()}, color=${color})`);
+        setSelectedSquare(null);
+        setOptionSquares({});
+        return;
+      }
     } else {
-      if (resultRef.current) return;
+      if (resultRef.current) {
+        addLog("onSquareClick: Error - Game already over");
+        return;
+      }
     }
 
     // Second click: try to move
     if (selectedSquare && selectedSquare !== square) {
       const piece = g.get(selectedSquare);
+
+      // Check turn matches piece in local mode
+      if (isLocal && piece?.color !== g.turn()) {
+        addLog(`onSquareClick: Select wrong color piece (color=${piece?.color}, turn=${g.turn()})`);
+        setSelectedSquare(null);
+        setOptionSquares({});
+        return;
+      }
+
       const promotion =
         piece?.type === "p" &&
         ((g.turn() === "w" && square[1] === "8") || (g.turn() === "b" && square[1] === "1"))
           ? "q" : undefined;
 
       try {
-        const copy = loadFen(g.fen());
-        const move = copy.move({ from: selectedSquare, to: square, promotion });
+        addLog(`onSquareClick: Attempting move ${selectedSquare} -> ${square}`);
+        const move = g.move({ from: selectedSquare, to: square, promotion });
         if (move) {
-          gameRef.current = copy;
-          setFen(copy.fen());
+          addLog(`onSquareClick: Success - ${move.san}`);
+
+          setFen(g.fen());
           setMoveHistory((h) => [...h, move.san]);
           setLastMoveSquares({
             [selectedSquare]: { background: "rgba(255, 255, 0, 0.25)" },
@@ -280,24 +325,32 @@ export default function Game({ config, onLeave }) {
 
           if (isLocal) {
             // Check game over local sandbox
-            const over = copy.isCheckmate() ? "Checkmate!" :
-                         copy.isStalemate() ? "Draw by stalemate." :
-                         copy.isInsufficientMaterial() ? "Draw by insufficient material." :
-                         copy.isThreefoldRepetition() ? "Draw by threefold repetition." :
-                         copy.isDraw() ? "Draw!" : null;
+            const over = g.isCheckmate() ? "Checkmate!" :
+                         g.isStalemate() ? "Draw by stalemate." :
+                         g.isInsufficientMaterial() ? "Draw by insufficient material." :
+                         g.isThreefoldRepetition() ? "Draw by threefold repetition." :
+                         g.isDraw() ? "Draw!" : null;
             if (over) {
               setGameResult(over);
               resultRef.current = over;
+              addLog(`onSquareClick: Game Over - ${over}`);
             } else {
-              if (copy.isCheck()) setStatus("Check!");
-              else setStatus("");
+              if (g.isCheck()) {
+                setStatus("Check!");
+                addLog("onSquareClick: Check!");
+              } else {
+                setStatus("");
+              }
             }
 
             if (autoFlip) {
-              setPlayerColor(copy.turn());
-              playerColorRef.current = copy.turn();
+              const nextTurn = g.turn();
+              setPlayerColor(nextTurn);
+              playerColorRef.current = nextTurn;
+              addLog(`onSquareClick: Auto-flipping to ${nextTurn === "w" ? "White" : "Black"}`);
             }
           } else {
+            const room  = roomIdRef.current;
             socketRef.current?.emit("move", {
               roomId: room,
               move: { from: selectedSquare, to: square, promotion },
@@ -305,26 +358,55 @@ export default function Game({ config, onLeave }) {
           }
           return;
         }
-      } catch { /* fall through to select */ }
+      } catch (e) {
+        addLog(`onSquareClick: Exception - ${e.message}`);
+        setSelectedSquare(null);
+        setOptionSquares({});
+        return;
+      }
     }
 
     // First click (or invalid target): select piece and show options
     getMoveOptions(square);
-  }, [selectedSquare, getMoveOptions, mode, gameStarted, autoFlip]);
+  }, [selectedSquare, getMoveOptions, mode, gameStarted, autoFlip, addLog]);
 
   // ─── Drag and drop ───────────────────────────────────────────────────────
   const onDrop = useCallback((sourceSquare, targetSquare, piece) => {
-    const color = playerColorRef.current;
-    const room  = roomIdRef.current;
-    const g     = gameRef.current;
     const isLocal = mode === "local";
+    const g     = gameRef.current;
+
+    addLog(`onDrop: Attempt ${piece} ${sourceSquare} -> ${targetSquare}`);
 
     if (!isLocal) {
-      if (!color || resultRef.current) return false;
-      if (!gameStarted) return false; // Prevent early moves!
-      if (g.turn() !== color) return false;
+      const color = playerColorRef.current;
+      const room  = roomIdRef.current;
+      if (!color) {
+        addLog("onDrop: Error - Player color is null");
+        return false;
+      }
+      if (resultRef.current) {
+        addLog("onDrop: Error - Game already over");
+        return false;
+      }
+      if (!gameStarted) {
+        addLog("onDrop: Error - Game not started yet");
+        return false;
+      }
+      if (g.turn() !== color) {
+        addLog(`onDrop: Error - Not your turn (turn=${g.turn()}, color=${color})`);
+        return false;
+      }
     } else {
-      if (resultRef.current) return false;
+      if (resultRef.current) {
+        addLog("onDrop: Error - Game already over");
+        return false;
+      }
+      // In local mode, make sure they are moving the correct color piece
+      const pieceColor = piece?.[0]; // "w" or "b"
+      if (pieceColor !== g.turn()) {
+        addLog(`onDrop: Error - Moving wrong color piece (piece=${piece}, turn=${g.turn()})`);
+        return false;
+      }
     }
 
     const promotion =
@@ -333,12 +415,15 @@ export default function Game({ config, onLeave }) {
         ? "q" : undefined;
 
     try {
-      const copy = loadFen(g.fen());
-      const move = copy.move({ from: sourceSquare, to: targetSquare, promotion });
-      if (!move) return false;
+      const move = g.move({ from: sourceSquare, to: targetSquare, promotion });
+      if (!move) {
+        addLog(`onDrop: Error - chess.js returned null move`);
+        return false;
+      }
 
-      gameRef.current = copy;
-      setFen(copy.fen());
+      addLog(`onDrop: Success - ${move.san}`);
+
+      setFen(g.fen());
       setMoveHistory((h) => [...h, move.san]);
       setLastMoveSquares({
         [sourceSquare]: { background: "rgba(255, 255, 0, 0.25)" },
@@ -349,34 +434,43 @@ export default function Game({ config, onLeave }) {
 
       if (isLocal) {
         // Check game over local sandbox
-        const over = copy.isCheckmate() ? "Checkmate!" :
-                     copy.isStalemate() ? "Draw by stalemate." :
-                     copy.isInsufficientMaterial() ? "Draw by insufficient material." :
-                     copy.isThreefoldRepetition() ? "Draw by threefold repetition." :
-                     copy.isDraw() ? "Draw!" : null;
+        const over = g.isCheckmate() ? "Checkmate!" :
+                     g.isStalemate() ? "Draw by stalemate." :
+                     g.isInsufficientMaterial() ? "Draw by insufficient material." :
+                     g.isThreefoldRepetition() ? "Draw by threefold repetition." :
+                     g.isDraw() ? "Draw!" : null;
         if (over) {
           setGameResult(over);
           resultRef.current = over;
+          addLog(`onDrop: Game Over - ${over}`);
         } else {
-          if (copy.isCheck()) setStatus("Check!");
-          else setStatus("");
+          if (g.isCheck()) {
+            setStatus("Check!");
+            addLog("onDrop: Check!");
+          } else {
+            setStatus("");
+          }
         }
 
         if (autoFlip) {
-          setPlayerColor(copy.turn());
-          playerColorRef.current = copy.turn();
+          const nextTurn = g.turn();
+          setPlayerColor(nextTurn);
+          playerColorRef.current = nextTurn;
+          addLog(`onDrop: Auto-flipping to ${nextTurn === "w" ? "White" : "Black"}`);
         }
       } else {
+        const room  = roomIdRef.current;
         socketRef.current?.emit("move", {
           roomId: room,
           move: { from: sourceSquare, to: targetSquare, promotion },
         });
       }
       return true; // ← piece stays, no snap-back
-    } catch {
+    } catch (e) {
+      addLog(`onDrop: Exception - ${e.message}`);
       return false;
     }
-  }, [mode, gameStarted, autoFlip]);
+  }, [mode, gameStarted, autoFlip, addLog]);
 
   // ─── Auto-scroll move list ────────────────────────────────────────────────
   useEffect(() => {
@@ -402,6 +496,7 @@ export default function Game({ config, onLeave }) {
   const resign      = ()  => socketRef.current?.emit("resign",     { roomId });
 
   const restartSandbox = () => {
+    addLog("Restarting Sandbox...");
     const fresh = new Chess();
     gameRef.current = fresh;
     setFen(fresh.fen());
@@ -604,6 +699,7 @@ export default function Game({ config, onLeave }) {
       <div className="game-board-wrap">
         <Chessboard
           id="main-board"
+          key={boardOrientation}
           position={fen}
           onPieceDrop={onDrop}
           onSquareClick={onSquareClick}
@@ -638,6 +734,23 @@ export default function Game({ config, onLeave }) {
           <div className="legend-item"><span className="legend-sq dark" /> Dark: #8B6914</div>
           <div className="legend-item"><span className="legend-sq light" /> Light: #F0D9A0</div>
         </div>
+
+        {mode === "local" && (
+          <div className="move-history" style={{ marginTop: "16px", maxHeight: "180px", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+            <h3 style={{ color: "#c8a84b" }}>System Logs</h3>
+            <div className="move-list" style={{ fontSize: "0.75rem", fontFamily: "monospace", flex: 1, overflowY: "auto" }}>
+              {logs.length === 0 ? (
+                <p className="no-moves">No system logs yet</p>
+              ) : (
+                logs.map((log, index) => (
+                  <div key={index} style={{ padding: "2px 0", borderBottom: "1px solid rgba(255,255,255,0.02)", color: log.includes("Error") || log.includes("Exception") ? "#ff8b8b" : "#e8d9b8" }}>
+                    {log}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
