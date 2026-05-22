@@ -83,40 +83,22 @@ function getScoresPayload(room) {
   };
 }
 
-function recordGameResult(room, result) {
+
+function recordGameResult(room, result, winnerColor) {
   const playerW = room.players.find(p => p.color === "w")?.name || room.playerNames?.w || "White";
   const playerB = room.players.find(p => p.color === "b")?.name || room.playerNames?.b || "Black";
   const moveCount = room.chess.history().length;
-
-  let winner = null;
-  if (result.includes("White wins") || result.includes("White wins")) winner = "w";
-  else if (result.includes("Black wins")) winner = "b";
-  else winner = "draw";
-
-  // Update scores
+  const winner = winnerColor || "draw";
   if (winner === "w") room.scores.w++;
   else if (winner === "b") room.scores.b++;
   else room.scores.draws++;
-
-  // Add to history
-  const record = {
-    result,
-    winner,
-    date: new Date().toISOString(),
-    moveCount,
-    playerW,
-    playerB,
-  };
-  room.gameHistory.unshift(record); // newest first
+  let friendlyResult = result.replace(/\bWhite\b/g, playerW).replace(/\bBlack\b/g, playerB);
+  const record = { result: friendlyResult, winner, date: new Date().toISOString(), moveCount, playerW, playerB };
+  room.gameHistory.unshift(record);
   if (room.gameHistory.length > MAX_GAME_HISTORY) room.gameHistory.pop();
-
-  // Remember player names for persistent rooms
-  if (room.isPersistent) {
-    room.playerNames = { w: playerW, b: playerB };
-  }
+  if (room.isPersistent) room.playerNames = { w: playerW, b: playerB };
+  return friendlyResult;
 }
-
-// ─── Clock ─────────────────────────────────────────────────────────────────────
 
 function startClock(roomId) {
   const room = rooms[roomId];
@@ -138,10 +120,10 @@ function startClock(roomId) {
     if (current.timeMs <= 0) {
       clearInterval(r.clockInterval);
       r.clockInterval = null;
-      const winner = current.color === "w" ? "Black" : "White";
-      const result = `${winner} wins on time`;
-      recordGameResult(r, result);
-      io.to(roomId).emit("game_over", { result });
+      const winnerColor = current.color === "w" ? "b" : "w";
+      const result = `${winnerColor === "w" ? "White" : "Black"} wins on time`;
+      const friendlyResult1 = recordGameResult(r, result, winnerColor);
+      io.to(roomId).emit("game_over", { result: friendlyResult1 });
       io.to(roomId).emit("scores_update", getScoresPayload(r));
     }
   }, 1000);
@@ -315,8 +297,14 @@ io.on("connection", (socket) => {
     const gameOver = checkServerGameOver(room.chess);
     if (gameOver) {
       stopClock(roomId);
-      recordGameResult(room, gameOver);
-      io.to(roomId).emit("game_over", { result: gameOver });
+      // Determine winner color: after a move, chess.turn() is the player to move next
+      // If checkmate, that player LOST (they're in checkmate). Otherwise it's a draw.
+      let gameOverWinnerColor = "draw";
+      if (room.chess.isCheckmate()) {
+        gameOverWinnerColor = room.chess.turn() === "w" ? "b" : "w";
+      }
+      const friendlyGameOver = recordGameResult(room, gameOver, gameOverWinnerColor);
+      io.to(roomId).emit("game_over", { result: friendlyGameOver });
       io.to(roomId).emit("scores_update", getScoresPayload(room));
     }
   });
@@ -329,10 +317,10 @@ io.on("connection", (socket) => {
     if (!player) return;
 
     stopClock(roomId);
-    const winner = player.color === "w" ? "Black" : "White";
-    const result = `${winner} wins by resignation`;
-    recordGameResult(room, result);
-    io.to(roomId).emit("game_over", { result });
+    const resignWinnerColor = player.color === "w" ? "b" : "w";
+    const resignResult = `${resignWinnerColor === "w" ? "White" : "Black"} wins by resignation`;
+    const friendlyResign = recordGameResult(room, resignResult, resignWinnerColor);
+    io.to(roomId).emit("game_over", { result: friendlyResign });
     io.to(roomId).emit("scores_update", getScoresPayload(room));
   });
 
@@ -356,10 +344,9 @@ io.on("connection", (socket) => {
     if (!room || !room.drawOfferFrom) return;
     if (room.drawOfferFrom === socket.id) return;
     stopClock(roomId);
-    const result = "Draw by agreement";
     room.drawOfferFrom = null;
-    recordGameResult(room, result);
-    io.to(roomId).emit("game_over", { result });
+    const friendlyDraw = recordGameResult(room, "Draw by agreement", "draw");
+    io.to(roomId).emit("game_over", { result: friendlyDraw });
     io.to(roomId).emit("scores_update", getScoresPayload(room));
   });
 
