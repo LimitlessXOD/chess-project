@@ -350,3 +350,104 @@
   border-color: #c8a84b;
   font-weight: 700;
 }
+
+/* ── In-game match score panel ── */
+.room-scores-panel {
+  background: rgba(200,168,75,0.06);
+  border: 1px solid rgba(200,168,75,0.2);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.room-scores-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.room-scores-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 0.82rem;
+  color: #c8a84b;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.history-mini-btn {
+  background: transparent;
+  border: none;
+  color: #6a5840;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 2px 6px;
+}
+.history-mini-btn:hover { color: #c8a84b; }
+.room-scores-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+.score-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px;
+  padding: 8px 14px;
+  flex: 1;
+  transition: all 0.3s;
+}
+.score-pill.me {
+  background: rgba(200,168,75,0.12);
+  border-color: rgba(200,168,75,0.3);
+}
+.score-pill.draw {
+  background: rgba(255,255,255,0.03);
+}
+.score-pill-label {
+  font-size: 0.68rem;
+  color: #6a5840;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.score-pill-num {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.4rem;
+  color: #c8a84b;
+  font-weight: 700;
+  line-height: 1;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.score-pill.me .score-pill-num { color: #f0dfa0; }
+
+/* ── Room history mini-list ── */
+.room-history-list {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.room-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  color: #a89068;
+  padding: 3px 0;
+}
+.rhr-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rhr-dot.white { background: #f0dfa0; }
+.rhr-dot.black { background: #6a5840; }
+.rhr-dot.draw  { background: rgba(200,168,75,0.5); }
+.rhr-result { flex: 1; color: #e8d9b8; font-size: 0.74rem; }
+.rhr-moves  { color: #4a3828; font-size: 0.7rem; white-space: nowrap; }

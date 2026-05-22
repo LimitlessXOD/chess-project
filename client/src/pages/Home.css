@@ -364,3 +364,140 @@
   .home-features { grid-template-columns: 1fr; }
   .play-buttons { grid-template-columns: 1fr; }
 }
+
+/* ── Score animation ── */
+.stat-animated {
+  transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ── History toggle ── */
+.history-toggle-btn {
+  background: transparent;
+  border: 1px solid rgba(200,168,75,0.3);
+  color: #a89068;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: 16px;
+  font-family: 'Lato', sans-serif;
+  letter-spacing: 0.5px;
+}
+.history-toggle-btn:hover {
+  color: #c8a84b;
+  border-color: rgba(200,168,75,0.6);
+}
+
+/* ── History panel ── */
+.history-panel {
+  width: 100%;
+  max-width: 760px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(200,168,75,0.15);
+  border-radius: 12px;
+  padding: 20px 24px;
+  margin-bottom: 24px;
+}
+
+.history-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 1rem;
+  color: #c8a84b;
+  margin: 0 0 14px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 30px 1fr auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 6px;
+  font-size: 0.82rem;
+}
+.history-row.draw { background: rgba(200,168,75,0.05); }
+
+.history-num { color: #6a5840; font-size: 0.75rem; }
+.history-players { color: #e8d9b8; }
+.history-players em { color: #6a5840; font-style: normal; }
+.history-result { color: #c8a84b; font-size: 0.8rem; text-align: right; }
+.history-moves { color: #6a5840; font-size: 0.75rem; text-align: right; }
+.history-date { color: #4a3828; font-size: 0.72rem; }
+
+/* ── Saved rooms ── */
+.saved-rooms-section {
+  margin-bottom: 20px;
+  width: 100%;
+}
+.saved-rooms-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 0.95rem;
+  color: #c8a84b;
+  margin: 0 0 10px;
+}
+.saved-room-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(200,168,75,0.06);
+  border: 1px solid rgba(200,168,75,0.18);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+}
+.saved-room-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.saved-room-code {
+  font-family: monospace;
+  font-size: 1rem;
+  letter-spacing: 3px;
+  color: #f0dfa0;
+  background: rgba(255,255,255,0.05);
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.saved-room-name { font-size: 0.85rem; color: #a89068; }
+.saved-room-name strong { color: #e8d9b8; }
+.saved-room-score {
+  font-size: 0.78rem;
+  color: #6a5840;
+  background: rgba(255,255,255,0.03);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(200,168,75,0.12);
+}
+.saved-room-actions { display: flex; gap: 8px; }
+
+/* ── Persistent toggle ── */
+.persistent-toggle {
+  margin-bottom: 16px;
+}
+.toggle-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: #a89068;
+}
+.toggle-label-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #c8a84b;
+  cursor: pointer;
+}
+.toggle-label-row:hover { color: #e8d9b8; }

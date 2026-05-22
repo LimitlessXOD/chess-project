@@ -8,8 +8,8 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-export default function Game({ config, onLeave }) {
-  const { mode, playerName, roomCode } = config;
+export default function Game({ config, onLeave, onScoresUpdate, onRoomSaved }) {
+  const { mode, playerName, roomCode, persistent, password } = config;
 
   // ─── Refs (always current, no stale closure issues) ──────────────────────────
   const socketRef       = useRef(null);
@@ -54,6 +54,10 @@ export default function Game({ config, onLeave }) {
   const [selectedSquare, setSelectedSquare]  = useState(null);
   const [optionSquares, setOptionSquares]    = useState({});
   const [lastMoveSquares, setLastMoveSquares]= useState({});
+  const [roomScores, setRoomScores]          = useState({ w: 0, b: 0, draws: 0 });
+  const [roomHistory, setRoomHistory]        = useState([]);
+  const [showRoomHistory, setShowRoomHistory]= useState(false);
+  const [isPersistentRoom, setIsPersistentRoom] = useState(false);
 
   // ─── Local Sandbox & Connection States ──────────────────────────────────────
   const [autoFlip, setAutoFlip]              = useState(true);
@@ -90,8 +94,8 @@ export default function Game({ config, onLeave }) {
         addLog(`Reconnecting to room ${roomCode} as ${playerName}`);
         socket.emit("reconnect_room", { roomId: roomCode, playerName });
       } else {
-        if (mode === "create") socket.emit("create_room", { playerName });
-        else                   socket.emit("join_room", { roomId: roomCode, playerName });
+        if (mode === "create") socket.emit("create_room", { playerName, persistent, password });
+        else                   socket.emit("join_room", { roomId: roomCode, playerName, password });
       }
     });
 
@@ -104,17 +108,23 @@ export default function Game({ config, onLeave }) {
       setConnectionStatus("offline");
     });
 
-    socket.on("room_created", ({ roomId: rid, color }) => {
+    socket.on("room_created", ({ roomId: rid, color, isPersistent: ip, scores, gameHistory: gh }) => {
       roomIdRef.current      = rid;
       playerColorRef.current = color;
       setRoomId(rid);
       setPlayerColor(color);
       setStatus("Waiting for opponent… Share the room code!");
+      if (scores) setRoomScores(scores);
+      if (gh) setRoomHistory(gh);
+      if (ip) {
+        setIsPersistentRoom(true);
+        onRoomSaved?.({ roomId: rid, playerName, password: password || null, scores: scores || { w: 0, b: 0, draws: 0 } });
+      }
       sessionStorage.setItem("chess_roomId", rid);
       sessionStorage.setItem("chess_playerName", playerName);
     });
 
-    socket.on("room_joined", ({ roomId: rid, color, opponentName: opp }) => {
+    socket.on("room_joined", ({ roomId: rid, color, opponentName: opp, isPersistent: ip, scores, gameHistory: gh }) => {
       roomIdRef.current      = rid;
       playerColorRef.current = color;
       opponentRef.current    = opp;
@@ -124,16 +134,21 @@ export default function Game({ config, onLeave }) {
       setStatus(`Playing against ${opp}`);
       gameStartedRef.current = true;
       setGameStarted(true);
+      if (scores) { setRoomScores(scores); onScoresUpdate?.(scores, gh || []); }
+      if (gh) setRoomHistory(gh);
+      if (ip) setIsPersistentRoom(true);
       sessionStorage.setItem("chess_roomId", rid);
       sessionStorage.setItem("chess_playerName", playerName);
     });
 
-    socket.on("opponent_joined", ({ opponentName: opp }) => {
+    socket.on("opponent_joined", ({ opponentName: opp, scores, gameHistory: gh }) => {
       opponentRef.current    = opp;
       gameStartedRef.current = true;
       setOpponentName(opp);
       setGameStarted(true);
       setStatus(`Playing against ${opp}`);
+      if (scores) { setRoomScores(scores); onScoresUpdate?.(scores, gh || []); }
+      if (gh) setRoomHistory(gh);
     });
 
     socket.on("opponent_reconnected", ({ name }) => {
@@ -208,6 +223,16 @@ export default function Game({ config, onLeave }) {
       setStatus("Game over");
     });
 
+    socket.on("scores_update", ({ scores, gameHistory: gh }) => {
+      if (scores) {
+        setRoomScores(scores);
+        onScoresUpdate?.(scores, gh || []);
+        // Update saved room score in localStorage
+        onRoomSaved?.({ roomId: roomIdRef.current, playerName, password: password || null, scores });
+      }
+      if (gh) setRoomHistory(gh);
+    });
+
     socket.on("opponent_disconnected", ({ reconnecting: r }) => {
       setStatus(r ? "Opponent disconnected — waiting 30s…" : "Opponent disconnected.");
     });
@@ -220,7 +245,7 @@ export default function Game({ config, onLeave }) {
     socket.on("rematch_requested", ({ from }) => setRematchRequest(from));
     socket.on("rematch_declined",  ()         => { setRematchRequest(null); setStatus("Rematch declined."); });
 
-    socket.on("rematch_start", ({ colors, fen: f }) => {
+    socket.on("rematch_start", ({ colors, fen: f, scores, gameHistory: gh }) => {
       const myColor = colors[socket.id];
       const fresh   = loadFen(f);
       gameRef.current        = fresh;
@@ -239,9 +264,11 @@ export default function Game({ config, onLeave }) {
       setLastMoveSquares({});
       setGameStarted(true);
       setStatus(`Playing against ${opponentRef.current}`);
+      if (scores) { setRoomScores(scores); onScoresUpdate?.(scores, gh || []); }
+      if (gh) setRoomHistory(gh);
     });
 
-    socket.on("reconnected", ({ color, fen: f, moves, times: t, opponentName: opp }) => {
+    socket.on("reconnected", ({ color, fen: f, moves, times: t, opponentName: opp, scores, gameHistory: gh }) => {
       if (!roomIdRef.current && mode === "reconnect") {
         roomIdRef.current = roomCode;
         setRoomId(roomCode);
@@ -266,7 +293,9 @@ export default function Game({ config, onLeave }) {
       setTimes(t || { w: null, b: null });
       setGameStarted(true);
       setStatus(`Playing against ${opp}`);
-      
+      if (scores) { setRoomScores(scores); onScoresUpdate?.(scores, gh || []); }
+      if (gh) setRoomHistory(gh);
+
       const hist = g.history({ verbose: true });
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
@@ -660,6 +689,11 @@ export default function Game({ config, onLeave }) {
             <button className="copy-btn" onClick={copyRoomCode}>
               {copied ? "✓ Copied!" : "Copy Code"}
             </button>
+            {isPersistentRoom && (
+              <p style={{ fontSize: "0.75rem", color: "#c8a84b", marginTop: "8px", marginBottom: 0 }}>
+                ♜ Saved Room — history persists
+              </p>
+            )}
           </div>
         )}
 
@@ -783,6 +817,47 @@ export default function Game({ config, onLeave }) {
       </div>
 
       <div className="game-sidebar right">
+        {opponentName && (
+          <div className="room-scores-panel">
+            <div className="room-scores-header">
+              <span className="room-scores-title">Match Score</span>
+              {roomHistory.length > 0 && (
+                <button
+                  className="history-mini-btn"
+                  onClick={() => setShowRoomHistory(h => !h)}
+                >
+                  {showRoomHistory ? "▲" : "▼"}
+                </button>
+              )}
+            </div>
+            <div className="room-scores-row">
+              <div className={`score-pill ${playerColor === "w" ? "me" : ""}`}>
+                <span className="score-pill-label">White</span>
+                <span className="score-pill-num">{roomScores.w}</span>
+              </div>
+              <div className="score-pill draw">
+                <span className="score-pill-label">Draw</span>
+                <span className="score-pill-num">{roomScores.draws}</span>
+              </div>
+              <div className={`score-pill ${playerColor === "b" ? "me" : ""}`}>
+                <span className="score-pill-label">Black</span>
+                <span className="score-pill-num">{roomScores.b}</span>
+              </div>
+            </div>
+            {showRoomHistory && roomHistory.length > 0 && (
+              <div className="room-history-list">
+                {roomHistory.slice(0, 10).map((g, i) => (
+                  <div key={i} className="room-history-row">
+                    <span className={`rhr-dot ${g.winner === "draw" ? "draw" : g.winner === "w" ? "white" : "black"}`} />
+                    <span className="rhr-result">{g.result}</span>
+                    <span className="rhr-moves">{g.moveCount}m</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="move-history">
           <h3>Move History</h3>
           <div className="move-list" ref={moveListRef}>

@@ -1,19 +1,18 @@
 /**
- * Chess Server — Improved
+ * Chess Server — Ultimate Chess Showdown Edition
  *
- * Key fixes over original:
- *  1. chess.js runs on the SERVER — moves are validated here, not trusted from client
- *  2. FEN is never accepted from client — server owns board state
- *  3. game_over cannot be faked — server only emits it after verifying state
- *  4. Reconnect grace period (30 s) — brief disconnect doesn't kill the game
- *  5. game_start event is now emitted so the client listener actually fires
- *  6. SOCKET_URL is driven by an env var on the client side (see vite.config note)
+ * New features over previous version:
+ *  1. Persistent named rooms — players create a room with a custom name/password
+ *     and can rejoin it later to continue their W/L/D history
+ *  2. Real-time score updates — scores_update emitted after every game_over
+ *  3. Full game history log per room — stored as array of game records
+ *  4. Title updated to "Ultimate Chess Showdown"
  */
 
 const express  = require("express");
 const http     = require("http");
 const { Server } = require("socket.io");
-const { Chess }  = require("chess.js"); // npm install chess.js
+const { Chess }  = require("chess.js");
 
 const app    = express();
 const server = http.createServer(app);
@@ -24,22 +23,31 @@ const io     = new Server(server, {
 // ─── Room store ────────────────────────────────────────────────────────────────
 // rooms: { [roomId]: Room }
 // Room: {
-//   players:       Player[],        // max 2
-//   chess:         Chess,           // server-authoritative board
-//   turn:          "w" | "b",
-//   rematchVotes:  Set<socketId>,
-//   drawOfferFrom: socketId | null,
-//   chatHistory:   ChatEntry[],
-//   clockInterval: NodeJS.Timeout | null,
-//   reconnectTimers: { [socketId]: NodeJS.Timeout }   // grace-period timers
+//   players:        Player[],        // max 2
+//   chess:          Chess,           // server-authoritative board
+//   turn:           "w" | "b",
+//   rematchVotes:   Set<socketId>,
+//   drawOfferFrom:  socketId | null,
+//   chatHistory:    ChatEntry[],
+//   clockInterval:  NodeJS.Timeout | null,
+//   reconnectTimers:{ [socketId]: NodeJS.Timeout },
+//   // Persistence fields:
+//   isPersistent:   boolean,         // true = saved room
+//   password:       string | null,   // optional password
+//   scores:         { w: number, b: number, draws: number },
+//   gameHistory:    GameRecord[],    // list of completed games
+//   playerNames:    { w: string, b: string } | null  // stored names for persistent rooms
 // }
-// Player: { id, name, color, timeMs, disconnected? }
+// Player:      { id, name, color, timeMs, disconnected? }
+// GameRecord:  { result, winner, date, moveCount, playerW, playerB }
 
 const rooms = {};
 
-const ROOM_CLEANUP_DELAY = 30_000;   // ms — empty room TTL
-const RECONNECT_GRACE_MS = 30_000;   // ms — how long we hold a slot for a dropped player
+const ROOM_CLEANUP_DELAY = 30_000;
+const RECONNECT_GRACE_MS = 30_000;
+const PERSISTENT_ROOM_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DEFAULT_TIME_MS    = 10 * 60 * 1000;
+const MAX_GAME_HISTORY   = 50;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,13 +64,56 @@ function getRoomOfSocket(socketId) {
 }
 
 function scheduleRoomCleanup(roomId) {
+  const room = rooms[roomId];
+  if (room?.isPersistent) return; // don't auto-delete persistent rooms
   setTimeout(() => {
-    const room = rooms[roomId];
-    if (room && room.players.length === 0) {
+    const r = rooms[roomId];
+    if (r && r.players.length === 0 && !r.isPersistent) {
       delete rooms[roomId];
       console.log(`Room ${roomId} cleaned up.`);
     }
   }, ROOM_CLEANUP_DELAY);
+}
+
+function getScoresPayload(room) {
+  return {
+    scores: room.scores,
+    gameHistory: room.gameHistory,
+    playerNames: room.playerNames,
+  };
+}
+
+function recordGameResult(room, result) {
+  const playerW = room.players.find(p => p.color === "w")?.name || room.playerNames?.w || "White";
+  const playerB = room.players.find(p => p.color === "b")?.name || room.playerNames?.b || "Black";
+  const moveCount = room.chess.history().length;
+
+  let winner = null;
+  if (result.includes("White wins") || result.includes("White wins")) winner = "w";
+  else if (result.includes("Black wins")) winner = "b";
+  else winner = "draw";
+
+  // Update scores
+  if (winner === "w") room.scores.w++;
+  else if (winner === "b") room.scores.b++;
+  else room.scores.draws++;
+
+  // Add to history
+  const record = {
+    result,
+    winner,
+    date: new Date().toISOString(),
+    moveCount,
+    playerW,
+    playerB,
+  };
+  room.gameHistory.unshift(record); // newest first
+  if (room.gameHistory.length > MAX_GAME_HISTORY) room.gameHistory.pop();
+
+  // Remember player names for persistent rooms
+  if (room.isPersistent) {
+    room.playerNames = { w: playerW, b: playerB };
+  }
 }
 
 // ─── Clock ─────────────────────────────────────────────────────────────────────
@@ -76,7 +127,7 @@ function startClock(roomId) {
     if (!r) { clearInterval(room.clockInterval); return; }
 
     const current = r.players.find((p) => p.color === r.turn && !p.disconnected);
-    if (!current) return; // don't tick while player is reconnecting
+    if (!current) return;
 
     current.timeMs -= 1000;
 
@@ -88,7 +139,10 @@ function startClock(roomId) {
       clearInterval(r.clockInterval);
       r.clockInterval = null;
       const winner = current.color === "w" ? "Black" : "White";
-      io.to(roomId).emit("game_over", { result: `${winner} wins on time` });
+      const result = `${winner} wins on time`;
+      recordGameResult(r, result);
+      io.to(roomId).emit("game_over", { result });
+      io.to(roomId).emit("scores_update", getScoresPayload(r));
     }
   }, 1000);
 }
@@ -112,17 +166,16 @@ function resetRoom(room) {
 }
 
 // ─── Server-side end-of-game check ────────────────────────────────────────────
-// Called after every validated move. Returns a result string or null.
 
 function checkServerGameOver(chess) {
   if (chess.isCheckmate()) {
     const winner = chess.turn() === "w" ? "Black" : "White";
     return `Checkmate! ${winner} wins.`;
   }
-  if (chess.isStalemate())          return "Draw by stalemate.";
+  if (chess.isStalemate())            return "Draw by stalemate.";
   if (chess.isInsufficientMaterial()) return "Draw — insufficient material.";
-  if (chess.isThreefoldRepetition()) return "Draw by threefold repetition.";
-  if (chess.isDraw())               return "Draw!";
+  if (chess.isThreefoldRepetition())  return "Draw by threefold repetition.";
+  if (chess.isDraw())                 return "Draw!";
   return null;
 }
 
@@ -131,12 +184,10 @@ function checkServerGameOver(chess) {
 io.on("connection", (socket) => {
   console.log("Connected:", socket.id);
 
-  // ── Per-socket rate limiting ─────────────────────────────────────────────────
-  // Simple token-bucket: tracks last-event timestamps to reject floods.
   const rateLimit = {
-    move:      { lastMs: 0, minInterval: 100  }, // max 10 moves/sec
-    offer_draw:{ lastMs: 0, minInterval: 3000 }, // max 1 draw offer per 3 s
-    chat:      { lastMs: 0, minInterval: 500  }, // max 2 messages/sec
+    move:       { lastMs: 0, minInterval: 100  },
+    offer_draw: { lastMs: 0, minInterval: 3000 },
+    chat:       { lastMs: 0, minInterval: 500  },
   };
 
   function checkRate(key) {
@@ -148,7 +199,7 @@ io.on("connection", (socket) => {
   }
 
   // ── Create Room ─────────────────────────────────────────────────────────────
-  socket.on("create_room", ({ playerName }) => {
+  socket.on("create_room", ({ playerName, persistent, password }) => {
     if (!playerName || typeof playerName !== "string" || !playerName.trim()) {
       return socket.emit("error", { message: "Invalid player name." });
     }
@@ -164,15 +215,27 @@ io.on("connection", (socket) => {
       chatHistory:     [],
       clockInterval:   null,
       reconnectTimers: {},
+      isPersistent:    !!persistent,
+      password:        password ? password.trim().substring(0, 30) : null,
+      scores:          { w: 0, b: 0, draws: 0 },
+      gameHistory:     [],
+      playerNames:     null,
     };
 
     socket.join(roomId);
-    socket.emit("room_created", { roomId, color: "w", playerName: name });
-    console.log(`Room ${roomId} created by ${name}`);
+    socket.emit("room_created", {
+      roomId,
+      color: "w",
+      playerName: name,
+      isPersistent: !!persistent,
+      scores: rooms[roomId].scores,
+      gameHistory: [],
+    });
+    console.log(`Room ${roomId} created by ${name}${persistent ? " (persistent)" : ""}`);
   });
 
   // ── Join Room ────────────────────────────────────────────────────────────────
-  socket.on("join_room", ({ roomId, playerName }) => {
+  socket.on("join_room", ({ roomId, playerName, password }) => {
     if (!playerName || typeof playerName !== "string" || !playerName.trim()) {
       return socket.emit("error", { message: "Invalid player name." });
     }
@@ -180,7 +243,16 @@ io.on("connection", (socket) => {
     if (!id) return socket.emit("error", { message: "Invalid room ID." });
 
     const room = rooms[id];
-    if (!room)                    return socket.emit("error", { message: "Room not found." });
+    if (!room) return socket.emit("error", { message: "Room not found." });
+
+    // Check password if room is protected
+    if (room.password) {
+      const pw = password ? password.trim() : "";
+      if (pw !== room.password) {
+        return socket.emit("error", { message: "Wrong room password." });
+      }
+    }
+
     if (room.players.length >= 2) return socket.emit("error", { message: "Room is full." });
 
     const name = playerName.trim().substring(0, 20);
@@ -188,25 +260,32 @@ io.on("connection", (socket) => {
     socket.join(id);
 
     const white = room.players[0];
-    socket.emit("room_joined",   { roomId: id, color: "b", opponentName: white.name });
-    io.to(white.id).emit("opponent_joined", { opponentName: name });
+    socket.emit("room_joined", {
+      roomId: id,
+      color: "b",
+      opponentName: white.name,
+      isPersistent: room.isPersistent,
+      scores: room.scores,
+      gameHistory: room.gameHistory,
+    });
+    io.to(white.id).emit("opponent_joined", {
+      opponentName: name,
+      scores: room.scores,
+      gameHistory: room.gameHistory,
+    });
 
-    // Emit game_start to both players so clients can mark the game as active
     io.to(id).emit("game_start", {
       whitePlayer: white.name,
       blackPlayer: name,
     });
 
-    // Small delay so clients finish processing room_joined/opponent_joined
-    // before the first clock_update arrives
     setTimeout(() => startClock(id), 500);
     console.log(`${name} joined room ${id}`);
   });
 
   // ── Move — SERVER VALIDATES ──────────────────────────────────────────────────
   socket.on("move", ({ roomId, move }) => {
-    if (!checkRate("move")) return; // flood protection
-    // NOTE: 'fen' from client is intentionally ignored — server owns board state
+    if (!checkRate("move")) return;
     const room = rooms[roomId];
     if (!room) return;
 
@@ -215,34 +294,30 @@ io.on("connection", (socket) => {
       return socket.emit("error", { message: "Not your turn." });
     }
 
-    // Attempt the move on the server's Chess instance
     let result;
     try {
-      result = room.chess.move(move); // move can be SAN string or { from, to, promotion }
+      result = room.chess.move(move);
     } catch {
       result = null;
     }
 
     if (!result) {
-      // Illegal move — tell client to revert
       return socket.emit("illegal_move", { fen: room.chess.fen() });
     }
 
-    // Move is legal — update authoritative state
     room.turn         = room.chess.turn();
     room.drawOfferFrom = null;
 
-    // Broadcast the validated move + authoritative FEN to both players
     const fen = room.chess.fen();
     socket.to(roomId).emit("opponent_move", { move: result.san, fen });
-    // Echo back the authoritative FEN to the mover too (so they stay in sync)
     socket.emit("move_ack", { move: result.san, fen });
 
-    // Check for game over conditions server-side
     const gameOver = checkServerGameOver(room.chess);
     if (gameOver) {
       stopClock(roomId);
+      recordGameResult(room, gameOver);
       io.to(roomId).emit("game_over", { result: gameOver });
+      io.to(roomId).emit("scores_update", getScoresPayload(room));
     }
   });
 
@@ -255,12 +330,15 @@ io.on("connection", (socket) => {
 
     stopClock(roomId);
     const winner = player.color === "w" ? "Black" : "White";
-    io.to(roomId).emit("game_over", { result: `${winner} wins by resignation` });
+    const result = `${winner} wins by resignation`;
+    recordGameResult(room, result);
+    io.to(roomId).emit("game_over", { result });
+    io.to(roomId).emit("scores_update", getScoresPayload(room));
   });
 
   // ── Draw Offer ───────────────────────────────────────────────────────────────
   socket.on("offer_draw", ({ roomId }) => {
-    if (!checkRate("offer_draw")) return; // prevents draw spam
+    if (!checkRate("offer_draw")) return;
     const room = rooms[roomId];
     if (!room) return;
     const player = room.players.find((p) => p.id === socket.id);
@@ -276,11 +354,13 @@ io.on("connection", (socket) => {
   socket.on("accept_draw", ({ roomId }) => {
     const room = rooms[roomId];
     if (!room || !room.drawOfferFrom) return;
-    // Only the non-offerer can accept
     if (room.drawOfferFrom === socket.id) return;
     stopClock(roomId);
+    const result = "Draw by agreement";
     room.drawOfferFrom = null;
-    io.to(roomId).emit("game_over", { result: "Draw by agreement" });
+    recordGameResult(room, result);
+    io.to(roomId).emit("game_over", { result });
+    io.to(roomId).emit("scores_update", getScoresPayload(room));
   });
 
   socket.on("decline_draw", ({ roomId }) => {
@@ -303,12 +383,13 @@ io.on("connection", (socket) => {
     }
     if (room.rematchVotes.size >= 2) {
       stopClock(roomId);
-      // Swap colors each rematch
       room.players.forEach((p) => { p.color = p.color === "w" ? "b" : "w"; });
       resetRoom(room);
       io.to(roomId).emit("rematch_start", {
         colors: room.players.reduce((acc, p) => { acc[p.id] = p.color; return acc; }, {}),
         fen:    room.chess.fen(),
+        scores: room.scores,
+        gameHistory: room.gameHistory,
       });
       startClock(roomId);
     }
@@ -323,7 +404,7 @@ io.on("connection", (socket) => {
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
   socket.on("chat_message", ({ roomId, message }) => {
-    if (!checkRate("chat")) return; // prevents chat flood
+    if (!checkRate("chat")) return;
     const room = rooms[roomId];
     if (!room) return;
     const player = room.players.find((p) => p.id === socket.id);
@@ -347,6 +428,8 @@ io.on("connection", (socket) => {
       moves:       room.chess.history(),
       players:     room.players.map((p) => ({ name: p.name, color: p.color, timeMs: p.timeMs })),
       chatHistory: room.chatHistory,
+      scores:      room.scores,
+      gameHistory: room.gameHistory,
     });
   });
 
@@ -361,25 +444,18 @@ io.on("connection", (socket) => {
     const player = room.players[playerIndex];
     console.log(`${player.name} left room ${roomId} explicitly.`);
 
-    // Cancel any reconnect timer for this player
     if (room.reconnectTimers[socket.id]) {
       clearTimeout(room.reconnectTimers[socket.id]);
       delete room.reconnectTimers[socket.id];
     }
 
-    // Remove player
     room.players.splice(playerIndex, 1);
-
-    // Stop clock
     stopClock(roomId);
-
-    // Notify opponent
     socket.to(roomId).emit("opponent_left");
 
-    // Clean up room if empty
-    if (room.players.length === 0) {
+    if (room.players.length === 0 && !room.isPersistent) {
       delete rooms[roomId];
-      console.log(`Room ${roomId} cleaned up immediately because all players left.`);
+      console.log(`Room ${roomId} cleaned up.`);
     }
 
     socket.leave(roomId);
@@ -393,12 +469,10 @@ io.on("connection", (socket) => {
     const { roomId, room, player } = found;
     console.log(`${player.name} disconnected from room ${roomId} — holding slot for ${RECONNECT_GRACE_MS / 1000}s`);
 
-    // Pause the clock while they're gone
     stopClock(roomId);
     player.disconnected = true;
     socket.to(roomId).emit("opponent_disconnected", { reconnecting: true });
 
-    // Give them 30 seconds to reconnect before forfeiting their slot
     room.reconnectTimers[socket.id] = setTimeout(() => {
       const r = rooms[roomId];
       if (!r) return;
@@ -406,13 +480,18 @@ io.on("connection", (socket) => {
       r.players = r.players.filter((p) => p.id !== socket.id);
       io.to(roomId).emit("opponent_left");
 
-      if (r.players.length === 0) scheduleRoomCleanup(roomId);
+      if (r.players.length === 0) {
+        if (r.isPersistent) {
+          console.log(`Persistent room ${roomId} is now empty — keeping it alive.`);
+        } else {
+          scheduleRoomCleanup(roomId);
+        }
+      }
       console.log(`${player.name}'s reconnect window expired for room ${roomId}`);
     }, RECONNECT_GRACE_MS);
   });
 
   // ── Reconnect ─────────────────────────────────────────────────────────────────
-  // Client should emit this immediately on connect if they have a stored roomId + playerName
   socket.on("reconnect_room", ({ roomId, playerName }) => {
     const room = rooms[roomId];
     if (!room) return socket.emit("error", { message: "Room expired or not found." });
@@ -422,13 +501,11 @@ io.on("connection", (socket) => {
     );
     if (!player) return socket.emit("error", { message: "No reconnect slot found." });
 
-    // Cancel the eviction timer
     if (room.reconnectTimers[player.id]) {
       clearTimeout(room.reconnectTimers[player.id]);
       delete room.reconnectTimers[player.id];
     }
 
-    // Swap to new socket ID
     player.id = socket.id;
     player.disconnected = false;
     socket.join(roomId);
@@ -443,22 +520,93 @@ io.on("connection", (socket) => {
       opponentName: opponent?.name || null,
       yourTurn:     room.turn === player.color,
       chatHistory:  room.chatHistory,
+      scores:       room.scores,
+      gameHistory:  room.gameHistory,
     });
 
     if (opponent) {
       io.to(opponent.id).emit("opponent_reconnected", { name: player.name });
-      // Only restart clock if both players are present and game isn't over
       if (!room.chess.isGameOver()) startClock(roomId);
     }
 
     console.log(`${player.name} reconnected to room ${roomId}`);
   });
+
+  // ── Rejoin persistent room ────────────────────────────────────────────────────
+  // Used when players return to a saved room after fully leaving (not just disconnect)
+  socket.on("rejoin_persistent", ({ roomId, playerName, password }) => {
+    const id = roomId?.toUpperCase();
+    const room = rooms[id];
+    if (!room) return socket.emit("error", { message: "Saved room not found." });
+    if (!room.isPersistent) return socket.emit("error", { message: "Not a saved room." });
+
+    if (room.password) {
+      const pw = password ? password.trim() : "";
+      if (pw !== room.password) {
+        return socket.emit("error", { message: "Wrong room password." });
+      }
+    }
+
+    if (room.players.length >= 2) return socket.emit("error", { message: "Room is full." });
+
+    const name = playerName.trim().substring(0, 20);
+
+    // Assign color based on what's available
+    const usedColors = room.players.map(p => p.color);
+    let color = usedColors.includes("w") ? "b" : "w";
+
+    room.players.push({ id: socket.id, name, color, timeMs: DEFAULT_TIME_MS });
+    socket.join(id);
+
+    const opponent = room.players.find(p => p.id !== socket.id);
+
+    socket.emit("room_joined", {
+      roomId: id,
+      color,
+      opponentName: opponent?.name || null,
+      isPersistent: true,
+      scores: room.scores,
+      gameHistory: room.gameHistory,
+    });
+
+    if (opponent) {
+      io.to(opponent.id).emit("opponent_joined", {
+        opponentName: name,
+        scores: room.scores,
+        gameHistory: room.gameHistory,
+      });
+
+      io.to(id).emit("game_start", {
+        whitePlayer: color === "b" ? opponent.name : name,
+        blackPlayer: color === "w" ? opponent.name : name,
+      });
+
+      setTimeout(() => startClock(id), 500);
+    } else {
+      setStatus?.("Waiting for your opponent to join…");
+    }
+
+    console.log(`${name} rejoined persistent room ${id}`);
+  });
 });
 
-// ─── Health check ──────────────────────────────────────────────────────────────
+// ─── Health check + room listing ──────────────────────────────────────────────
 app.get("/health", (_req, res) =>
   res.json({ status: "ok", rooms: Object.keys(rooms).length })
 );
+
+// List persistent rooms (for debug/admin — don't expose in prod without auth)
+app.get("/rooms/persistent", (_req, res) => {
+  const list = Object.entries(rooms)
+    .filter(([, r]) => r.isPersistent)
+    .map(([id, r]) => ({
+      id,
+      players: r.players.map(p => ({ name: p.name, color: p.color })),
+      scores: r.scores,
+      gamesPlayed: r.gameHistory.length,
+    }));
+  res.json(list);
+});
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, "0.0.0.0", () =>
