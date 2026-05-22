@@ -264,3 +264,89 @@
   .game-sidebar.left .back-btn { order: -1; }
   .move-history { display: none; }
 }
+
+/* ── Offline Diagnostics ── */
+.offline-card {
+  background: rgba(220, 80, 80, 0.08);
+  border: 1px solid rgba(220, 80, 80, 0.4);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+  margin-top: 12px;
+  backdrop-filter: blur(8px);
+}
+.offline-card h4 {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.1rem;
+  color: #f08080;
+  margin: 0 0 6px 0;
+}
+.offline-card p {
+  font-size: 0.8rem;
+  color: #c8a0a0;
+  margin: 0 0 10px 0;
+  line-height: 1.4;
+}
+.offline-card code {
+  background: rgba(0,0,0,0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.85em;
+  color: #ffd0d0;
+}
+.offline-card p.hint {
+  font-size: 0.75rem;
+  color: #8c7070;
+  margin-top: 4px;
+}
+.offline-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.offline-actions .play-btn {
+  padding: 8px 12px;
+  font-size: 0.8rem;
+}
+
+/* ── Local play UI toggles ── */
+.local-toggles {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(200, 168, 75, 0.15);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.8rem;
+}
+.toggle-label {
+  color: #a89068;
+}
+.toggle-btn {
+  background: rgba(200, 168, 75, 0.12);
+  border: 1px solid rgba(200, 168, 75, 0.35);
+  color: #f0dfa0;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+}
+.toggle-btn:hover {
+  background: rgba(200, 168, 75, 0.25);
+  border-color: rgba(200, 168, 75, 0.6);
+}
+.toggle-btn.active {
+  background: #c8a84b;
+  color: #1a1208;
+  border-color: #c8a84b;
+  font-weight: 700;
+}

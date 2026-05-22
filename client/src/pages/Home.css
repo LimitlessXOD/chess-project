@@ -201,6 +201,19 @@
   border-color: rgba(200,168,75,0.6);
 }
 
+.play-btn.local {
+  background: rgba(200, 168, 75, 0.12);
+  color: #f0dfa0;
+  border: 1px dashed rgba(200, 168, 75, 0.4);
+  width: 100%;
+  margin-top: 12px;
+}
+.play-btn.local:hover {
+  background: rgba(200, 168, 75, 0.22);
+  border-color: rgba(200, 168, 75, 0.8);
+  transform: translateY(-1px);
+}
+
 .play-btn.ghost {
   background: transparent;
   color: #8a7048;

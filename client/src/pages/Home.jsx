@@ -66,6 +66,12 @@ export default function Home({ onStartGame }) {
                 ♖ Join Room
               </button>
             </div>
+            <button className="play-btn local" onClick={() => {
+              const name = playerName.trim() || "Guest";
+              onStartGame({ mode: "local", playerName: name });
+            }}>
+              ♟ Local Play (Sandbox)
+            </button>
           </div>
         ) : mode === "create" ? (
           <div className="modal-box">
