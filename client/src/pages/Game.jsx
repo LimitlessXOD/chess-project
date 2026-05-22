@@ -9,6 +9,12 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
 export default function Game({ config, onLeave }) {
   const { mode, playerName, roomCode } = config;
 
+  const handleLeave = useCallback(() => {
+    sessionStorage.removeItem("chess_roomId");
+    sessionStorage.removeItem("chess_playerName");
+    onLeave();
+  }, [onLeave]);
+
   // ─── Single source of truth: FEN string (not a Chess object in state) ───────
   // This avoids stale Chess object bugs. We keep a Chess object only in a ref.
   const [fen, setFen]                        = useState(mode === "local" ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : "start");
@@ -70,8 +76,16 @@ export default function Game({ config, onLeave }) {
 
     socket.on("connect", () => {
       setConnectionStatus("connected");
-      if (mode === "create") socket.emit("create_room", { playerName });
-      else                   socket.emit("join_room", { roomId: roomCode, playerName });
+      const savedRoomId = sessionStorage.getItem("chess_roomId");
+      const savedPlayerName = sessionStorage.getItem("chess_playerName");
+
+      if (savedRoomId && savedPlayerName === playerName) {
+        addLog(`Reconnecting to room ${savedRoomId} as ${savedPlayerName}`);
+        socket.emit("reconnect_room", { roomId: savedRoomId, playerName: savedPlayerName });
+      } else {
+        if (mode === "create") socket.emit("create_room", { playerName });
+        else                   socket.emit("join_room", { roomId: roomCode, playerName });
+      }
     });
 
     socket.on("connect_error", () => {
@@ -89,6 +103,8 @@ export default function Game({ config, onLeave }) {
       setRoomId(rid);
       setPlayerColor(color);
       setStatus("Waiting for opponent… Share the room code!");
+      sessionStorage.setItem("chess_roomId", rid);
+      sessionStorage.setItem("chess_playerName", playerName);
     });
 
     socket.on("room_joined", ({ roomId: rid, color, opponentName: opp }) => {
@@ -101,6 +117,8 @@ export default function Game({ config, onLeave }) {
       setStatus(`Playing against ${opp}`);
       gameStartedRef.current = true;
       setGameStarted(true);
+      sessionStorage.setItem("chess_roomId", rid);
+      sessionStorage.setItem("chess_playerName", playerName);
     });
 
     socket.on("opponent_joined", ({ opponentName: opp }) => {
@@ -546,7 +564,7 @@ export default function Game({ config, onLeave }) {
   return (
     <div className="game-page">
       <div className="game-sidebar left">
-        <button className="back-btn" onClick={onLeave}>← Home</button>
+        <button className="back-btn" onClick={handleLeave}>← Home</button>
 
         <div className="player-card opponent">
           <span className="player-piece">{playerColor === "w" ? "♛" : "♔"}</span>
@@ -635,7 +653,7 @@ export default function Game({ config, onLeave }) {
             ) : (
               <button className="play-btn primary" onClick={requestRematch}>Rematch</button>
             )}
-            <button className="play-btn ghost"   onClick={onLeave}>Leave</button>
+            <button className="play-btn ghost"   onClick={handleLeave}>Leave</button>
           </div>
         )}
 
@@ -694,7 +712,7 @@ export default function Game({ config, onLeave }) {
                   setStatus("Reconnecting…");
                 }
               }}>Retry</button>
-              <button className="play-btn ghost" onClick={onLeave}>Leave</button>
+              <button className="play-btn ghost" onClick={handleLeave}>Leave</button>
             </div>
           </div>
         )}
