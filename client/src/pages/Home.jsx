@@ -6,15 +6,24 @@ export default function Home({ onStartGame }) {
   const [playerName, setPlayerName] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [error, setError] = useState("");
+  const [activeSession, setActiveSession] = useState(() => {
+    const savedRoomId = sessionStorage.getItem("chess_roomId");
+    const savedPlayerName = sessionStorage.getItem("chess_playerName");
+    return savedRoomId && savedPlayerName ? { roomId: savedRoomId, playerName: savedPlayerName } : null;
+  });
 
   const handleCreate = () => {
     if (!playerName.trim()) { setError("Enter your name first"); return; }
+    sessionStorage.removeItem("chess_roomId");
+    sessionStorage.removeItem("chess_playerName");
     onStartGame({ mode: "create", playerName: playerName.trim() });
   };
 
   const handleJoin = () => {
     if (!playerName.trim()) { setError("Enter your name first"); return; }
     if (!roomCode.trim()) { setError("Enter a room code"); return; }
+    sessionStorage.removeItem("chess_roomId");
+    sessionStorage.removeItem("chess_playerName");
     onStartGame({ mode: "join", playerName: playerName.trim(), roomCode: roomCode.trim().toUpperCase() });
   };
 
@@ -46,6 +55,34 @@ export default function Home({ onStartGame }) {
       </div>
 
       <div className="home-play">
+        {activeSession && (
+          <div className="active-session-banner">
+            <span className="session-icon">⚡</span>
+            <div className="session-info">
+              <h4>Active Game Detected</h4>
+              <p>You have a game in progress in room <strong>{activeSession.roomId}</strong> as <strong>{activeSession.playerName}</strong>.</p>
+            </div>
+            <div className="session-actions">
+              <button className="play-btn primary small" onClick={() => {
+                onStartGame({
+                  mode: "reconnect",
+                  playerName: activeSession.playerName,
+                  roomCode: activeSession.roomId
+                });
+              }}>
+                Resume Game
+              </button>
+              <button className="play-btn ghost small" onClick={() => {
+                sessionStorage.removeItem("chess_roomId");
+                sessionStorage.removeItem("chess_playerName");
+                setActiveSession(null);
+              }}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {!mode ? (
           <div className="play-options">
             <div className="name-row">
@@ -68,6 +105,8 @@ export default function Home({ onStartGame }) {
             </div>
             <button className="play-btn local" onClick={() => {
               const name = playerName.trim() || "Guest";
+              sessionStorage.removeItem("chess_roomId");
+              sessionStorage.removeItem("chess_playerName");
               onStartGame({ mode: "local", playerName: name });
             }}>
               ♟ Local Play (Sandbox)

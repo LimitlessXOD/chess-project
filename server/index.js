@@ -350,6 +350,41 @@ io.on("connection", (socket) => {
     });
   });
 
+  // ── Leave Room ────────────────────────────────────────────────────────────────
+  socket.on("leave_room", ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const playerIndex = room.players.findIndex((p) => p.id === socket.id);
+    if (playerIndex === -1) return;
+
+    const player = room.players[playerIndex];
+    console.log(`${player.name} left room ${roomId} explicitly.`);
+
+    // Cancel any reconnect timer for this player
+    if (room.reconnectTimers[socket.id]) {
+      clearTimeout(room.reconnectTimers[socket.id]);
+      delete room.reconnectTimers[socket.id];
+    }
+
+    // Remove player
+    room.players.splice(playerIndex, 1);
+
+    // Stop clock
+    stopClock(roomId);
+
+    // Notify opponent
+    socket.to(roomId).emit("opponent_left");
+
+    // Clean up room if empty
+    if (room.players.length === 0) {
+      delete rooms[roomId];
+      console.log(`Room ${roomId} cleaned up immediately because all players left.`);
+    }
+
+    socket.leave(roomId);
+  });
+
   // ── Disconnect with reconnect grace period ───────────────────────────────────
   socket.on("disconnect", () => {
     const found = getRoomOfSocket(socket.id);

@@ -300,6 +300,64 @@
   letter-spacing: 1px;
 }
 
+/* ── Active Session Banner ── */
+.active-session-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: rgba(200, 168, 75, 0.08);
+  border: 1px solid rgba(200, 168, 75, 0.35);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  backdrop-filter: blur(10px);
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.session-icon {
+  font-size: 1.8rem;
+  align-self: center;
+  filter: drop-shadow(0 0 10px rgba(200,168,75,0.4));
+}
+
+.session-info {
+  text-align: center;
+}
+
+.session-info h4 {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.1rem;
+  color: #f0dfa0;
+  margin: 0 0 6px;
+}
+
+.session-info p {
+  font-size: 0.88rem;
+  color: #a89068;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.session-info strong {
+  color: #e8d9b8;
+}
+
+.session-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.play-btn.small {
+  padding: 10px 16px;
+  font-size: 0.85rem;
+}
+
 @media (max-width: 600px) {
   .home-stats { padding: 20px 24px; gap: 20px; }
   .stat-num { font-size: 1.8rem; }

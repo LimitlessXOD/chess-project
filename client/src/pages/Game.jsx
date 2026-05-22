@@ -9,9 +9,29 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
 export default function Game({ config, onLeave }) {
   const { mode, playerName, roomCode } = config;
 
+  // ─── Refs (always current, no stale closure issues) ──────────────────────────
+  const socketRef       = useRef(null);
+  const moveListRef     = useRef(null);
+  const playerColorRef  = useRef(mode === "local" ? "w" : null);
+  const opponentRef     = useRef(null);
+  const roomIdRef       = useRef(null);
+  const gameRef         = useRef(new Chess());   // authoritative game state
+  const resultRef       = useRef(null);
+  const gameStartedRef  = useRef(mode === "local");
+
+  // ─── System Logs Debug overlay ──────────────────────────────────────────────
+  const [logs, setLogs] = useState([]);
+  const addLog = useCallback((msg) => {
+    console.log("[ChessLog]", msg);
+    setLogs((prev) => [msg, ...prev].slice(0, 8));
+  }, []);
+
   const handleLeave = useCallback(() => {
     sessionStorage.removeItem("chess_roomId");
     sessionStorage.removeItem("chess_playerName");
+    if (roomIdRef.current && socketRef.current) {
+      socketRef.current.emit("leave_room", { roomId: roomIdRef.current });
+    }
     onLeave();
   }, [onLeave]);
 
@@ -37,23 +57,6 @@ export default function Game({ config, onLeave }) {
   const [autoFlip, setAutoFlip]              = useState(true);
   const [connectionStatus, setConnectionStatus] = useState(mode === "local" ? "connected" : "connecting");
 
-  // ─── System Logs Debug overlay ──────────────────────────────────────────────
-  const [logs, setLogs] = useState([]);
-  const addLog = useCallback((msg) => {
-    console.log("[ChessLog]", msg);
-    setLogs((prev) => [msg, ...prev].slice(0, 8));
-  }, []);
-
-  // ─── Refs (always current, no stale closure issues) ──────────────────────────
-  const socketRef       = useRef(null);
-  const moveListRef     = useRef(null);
-  const playerColorRef  = useRef(mode === "local" ? "w" : null);
-  const opponentRef     = useRef(null);
-  const roomIdRef       = useRef(null);
-  const gameRef         = useRef(new Chess());   // authoritative game state
-  const resultRef       = useRef(null);
-  const gameStartedRef  = useRef(mode === "local");
-
   // ─── Helpers ─────────────────────────────────────────────────────────────────
   const loadFen = (f) => {
     try { return new Chess(f); }
@@ -76,12 +79,13 @@ export default function Game({ config, onLeave }) {
 
     socket.on("connect", () => {
       setConnectionStatus("connected");
-      const savedRoomId = sessionStorage.getItem("chess_roomId");
-      const savedPlayerName = sessionStorage.getItem("chess_playerName");
-
-      if (savedRoomId && savedPlayerName === playerName) {
-        addLog(`Reconnecting to room ${savedRoomId} as ${savedPlayerName}`);
-        socket.emit("reconnect_room", { roomId: savedRoomId, playerName: savedPlayerName });
+      
+      if (roomIdRef.current) {
+        addLog(`Reconnecting to room ${roomIdRef.current} as ${playerName}`);
+        socket.emit("reconnect_room", { roomId: roomIdRef.current, playerName });
+      } else if (mode === "reconnect") {
+        addLog(`Reconnecting to room ${roomCode} as ${playerName}`);
+        socket.emit("reconnect_room", { roomId: roomCode, playerName });
       } else {
         if (mode === "create") socket.emit("create_room", { playerName });
         else                   socket.emit("join_room", { roomId: roomCode, playerName });
@@ -129,6 +133,12 @@ export default function Game({ config, onLeave }) {
       setStatus(`Playing against ${opp}`);
     });
 
+    socket.on("opponent_reconnected", ({ name }) => {
+      opponentRef.current    = name;
+      setOpponentName(name);
+      setStatus(`Playing against ${name}`);
+    });
+
     socket.on("game_start", ({ whitePlayer, blackPlayer }) => {
       gameStartedRef.current = true;
       setGameStarted(true);
@@ -159,11 +169,18 @@ export default function Game({ config, onLeave }) {
     });
 
     socket.on("opponent_move", ({ move, fen: serverFen }) => {
-      const g = applyServerFen(serverFen);
+      try {
+        gameRef.current.move(move);
+      } catch {
+        addLog(`opponent_move desync fallback: loading FEN`);
+        const g = loadFen(serverFen);
+        gameRef.current = g;
+      }
+      setFen(gameRef.current.fen());
       setMoveHistory((h) => [...h, move]);
       setSelectedSquare(null);
       setOptionSquares({});
-      const hist = g.history({ verbose: true });
+      const hist = gameRef.current.history({ verbose: true });
       if (hist.length > 0) {
         const last = hist[hist.length - 1];
         setLastMoveSquares({
@@ -171,7 +188,7 @@ export default function Game({ config, onLeave }) {
           [last.to]:   { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
         });
       }
-      if (g.isCheck()) setStatus("Check!");
+      if (gameRef.current.isCheck()) setStatus("Check!");
       else setStatus("");
     });
 
@@ -222,7 +239,21 @@ export default function Game({ config, onLeave }) {
     });
 
     socket.on("reconnected", ({ color, fen: f, moves, times: t, opponentName: opp }) => {
-      applyServerFen(f);
+      if (!roomIdRef.current && mode === "reconnect") {
+        roomIdRef.current = roomCode;
+        setRoomId(roomCode);
+      }
+      const g = new Chess();
+      if (moves && moves.length > 0) {
+        for (const m of moves) {
+          try { g.move(m); }
+          catch (e) { console.error("Failed to replay move:", m, e); }
+        }
+      } else {
+        g.load(f);
+      }
+      gameRef.current = g;
+      setFen(g.fen());
       playerColorRef.current = color;
       opponentRef.current    = opp;
       gameStartedRef.current = true;
@@ -232,11 +263,23 @@ export default function Game({ config, onLeave }) {
       setTimes(t || { w: null, b: null });
       setGameStarted(true);
       setStatus(`Playing against ${opp}`);
+      
+      const hist = g.history({ verbose: true });
+      if (hist.length > 0) {
+        const last = hist[hist.length - 1];
+        setLastMoveSquares({
+          [last.from]: { backgroundColor: "rgba(235, 210, 140, 0.25)" },
+          [last.to]:   { backgroundColor: "rgba(235, 210, 140, 0.4)"  },
+        });
+      } else {
+        setLastMoveSquares({});
+      }
     });
 
     return () => socket.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
 
   // ─── Show legal move dots ─────────────────────────────────────────────────
   const getMoveOptions = useCallback((square) => {
