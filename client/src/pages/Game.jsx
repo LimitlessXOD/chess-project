@@ -6,6 +6,8 @@ import "./Game.css";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3001";
 
+const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
 export default function Game({ config, onLeave }) {
   const { mode, playerName, roomCode } = config;
 
@@ -37,7 +39,7 @@ export default function Game({ config, onLeave }) {
 
   // ─── Single source of truth: FEN string (not a Chess object in state) ───────
   // This avoids stale Chess object bugs. We keep a Chess object only in a ref.
-  const [fen, setFen]                        = useState(mode === "local" ? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" : "start");
+  const [fen, setFen]                        = useState(STARTING_FEN);
   const [playerColor, setPlayerColor]        = useState(mode === "local" ? "w" : null);
   const [roomId, setRoomId]                  = useState(null);
   const [opponentName, setOpponentName]      = useState(null);
@@ -59,8 +61,9 @@ export default function Game({ config, onLeave }) {
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
   const loadFen = (f) => {
-    try { return new Chess(f); }
-    catch { const g = new Chess(); g.load(f); return g; }
+    const fenStr = (!f || f === "start") ? STARTING_FEN : f;
+    try { return new Chess(fenStr); }
+    catch { const g = new Chess(); try { g.load(fenStr); } catch { /* use default */ } return g; }
   };
 
   const applyServerFen = useCallback((f) => {
@@ -772,8 +775,8 @@ export default function Game({ config, onLeave }) {
           boardOrientation={boardOrientation}
           customSquareStyles={customSquareStyles}
           customBoardStyle={{ borderRadius: "8px", boxShadow: "0 16px 60px rgba(0,0,0,0.6)" }}
-          customDarkSquareStyle={{ backgroundColor: "#708A83" }}
-          customLightSquareStyle={{ backgroundColor: "#ECE3D4" }}
+          customDarkSquareStyle={{ backgroundColor: "#B58863" }}
+          customLightSquareStyle={{ backgroundColor: "#F0D9B5" }}
           arePiecesDraggable={true}
           animationDuration={150}
         />
@@ -797,8 +800,8 @@ export default function Game({ config, onLeave }) {
         </div>
 
         <div className="board-legend">
-          <div className="legend-item"><span className="legend-sq dark" style={{ backgroundColor: "#708A83" }} /> Sage Green: #708A83</div>
-          <div className="legend-item"><span className="legend-sq light" style={{ backgroundColor: "#ECE3D4" }} /> Cream: #ECE3D4</div>
+          <div className="legend-item"><span className="legend-sq dark" style={{ backgroundColor: "#B58863" }} /> Brown: #B58863</div>
+          <div className="legend-item"><span className="legend-sq light" style={{ backgroundColor: "#F0D9B5" }} /> Cream: #F0D9B5</div>
         </div>
 
         {mode === "local" && (
